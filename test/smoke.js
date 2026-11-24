@@ -66,6 +66,8 @@ async function fail(who, method, url, body, re) {
   const meta = await ok('admin', 'GET', '/meta');
   const F = Object.fromEntries(meta.facilities.map((f) => [f.kind, f]));
   const acc = (k) => F[k].accounts[0].id;
+  const accT = (k, type) => F[k].accounts.find((a) => a.type === type).id;
+  assert.deepStrictEqual(F.hall.accounts.map((a) => a.name), ['كاش', 'بال باي', 'جوال باي']);
 
   // ---- المستخدمون والصلاحيات ----
   await ok('admin', 'POST', '/admin/users', { username: 'hall1', display_name: 'موظف الصالة', password: 'pass123', role: 'staff', facility_id: F.hall.id });
@@ -99,11 +101,12 @@ async function fail(who, method, url, body, re) {
   const p1dup = await ok('hall', 'POST', `/hall/bookings/${hb.id}/payments`, { amount: 1500, account_id: acc('hall') }, { 'Idempotency-Key': idem });
   assert.strictEqual(p1dup.duplicate, true);
   assert.strictEqual(p1dup.no, p1.no);
-  await ok('hall', 'POST', `/hall/bookings/${hb.id}/payments`, { amount: 2500, account_id: acc('hall') });
+  await ok('hall', 'POST', `/hall/bookings/${hb.id}/payments`, { amount: 1000, account_id: accT('hall', 'palpay') });
+  await ok('hall', 'POST', `/hall/bookings/${hb.id}/payments`, { amount: 1500, account_id: accT('hall', 'jawwalpay') });
   b = await ok('hall', 'GET', `/hall/bookings/${hb.id}`);
   assert.strictEqual(b.status, 'paid');
-  assert.strictEqual(b.payments.length, 3);
-  assert.deepStrictEqual(b.payments.map((p) => p.pay_type), ['deposit', 'extra', 'completion']);
+  assert.strictEqual(b.payments.length, 4);
+  assert.deepStrictEqual(b.payments.map((p) => p.pay_type), ['deposit', 'extra', 'extra', 'completion']);
   step('hall payments, duplicate submission ignored, status -> paid');
 
   // إلغاء مع خصم وإرجاع الباقي (الموظف لا يستطيع الإلغاء افتراضياً)
@@ -181,6 +184,13 @@ async function fail(who, method, url, body, re) {
   const hallSec = rep.sections.find((s) => s.facility.kind === 'hall');
   assert.strictEqual(hallSec.new_bookings_count, 2);
   assert.ok(hallSec.totals.refunds === 30000);
+  const pm = Object.fromEntries(hallSec.by_method.map((m) => [m.label, m]));
+  assert.strictEqual(pm['بال باي'].tin, 100000);
+  assert.strictEqual(pm['جوال باي'].tin, 150000);
+  assert.strictEqual(hallSec.by_method.reduce((x, m) => x + m.closing, 0), hallSec.closing);
+  const payRow = hallSec.ins.find((t) => t.ref_no === hb.no);
+  assert.strictEqual(payRow.booking_date, T);
+  assert.ok(payRow.event.startsWith(ev));
   const st = require('../server/reports/data').buildStatement({});
   assert.strictEqual(st.closing, st.opening + st.totals.tin - st.totals.tout);
   step(`period report + statement balance identity (net assets ${S.net_assets / 100})`);
@@ -195,18 +205,31 @@ async function fail(who, method, url, body, re) {
   const { findChrome } = require('../server/reports/pdf');
   if (findChrome()) {
     await ok('admin', 'PUT', '/admin/settings', { telegram_enabled: true, telegram_token: '123:TEST', telegram_chat_id: '-100' });
+    // كشف لكل منشأة لحاله
     const g = await ok('admin', 'POST', '/reports/generate', { kind: 'statement', preset: 'all', send: true });
-    assert.ok(g.sent && g.sent.ok, JSON.stringify(g.sent));
-    assert.ok(tgReceived.some((x) => x.url.includes('/bot123:TEST/sendDocument') && x.size > 10000));
-    const pdf = await call('admin', 'GET', `/reports/${g.id}/pdf`);
+    assert.ok(g.items.length >= 3, 'separate statement per facility');
+    assert.ok(g.items.every((i) => i.sent && i.sent.ok), JSON.stringify(g.items));
+    assert.ok(tgReceived.filter((x) => x.url.includes('/bot123:TEST/sendDocument') && x.size > 10000).length >= 3);
+    const gp = await ok('admin', 'POST', '/reports/generate', { kind: 'period', preset: 'day' });
+    assert.ok(gp.items.some((i) => i.title.startsWith('الملخص الإجمالي')));
+    assert.ok(gp.items.some((i) => i.title.startsWith('صالة الأفراح')));
+    for (const it of gp.items) {
+      const f = await call('admin', 'GET', `/reports/${it.id}/pdf`);
+      fs.writeFileSync(path.join(tmp, `${it.title.split(' — ')[0]}.pdf`), Buffer.from(f.data));
+    }
+    const pdf = await call('admin', 'GET', `/reports/${g.items[0].id}/pdf`);
     assert.strictEqual(Buffer.from(pdf.data).slice(0, 4).toString(), '%PDF');
     fs.writeFileSync(path.join(tmp, 'statement.pdf'), Buffer.from(pdf.data));
     // التقرير اليومي التلقائي + علامة "قديم" عند تسجيل عملية متأخرة
     const sched = require('../server/scheduler');
     await sched.tick();
     const reps = await ok('admin', 'GET', '/reports');
-    const daily = reps.find((r) => r.auto && r.type === 'daily');
-    assert.ok(daily && daily.telegram_status === 'sent', 'daily auto report sent');
+    const dailies = reps.filter((r) => r.auto && r.type === 'daily');
+    assert.ok(dailies.length >= 4, 'daily: one file per facility + summary');
+    assert.ok(dailies.every((r) => r.telegram_status === 'sent'), 'daily auto reports sent');
+    await sched.tick();
+    assert.strictEqual((await ok('admin', 'GET', '/reports')).filter((r) => r.auto && r.type === 'daily').length, dailies.length, 'no duplicates');
+    const daily = dailies.find((r) => r.title.startsWith('صالة الأفراح'));
     const y = addDays(T, -1);
     await ok('admin', 'POST', '/txns/income', { facility_id: F.hall.id, account_id: acc('hall'), amount: 5, category: 'أخرى', party: 'متأخر', op_date: y });
     const after = (await ok('admin', 'GET', '/reports')).find((r) => r.id === daily.id);

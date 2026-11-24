@@ -33,6 +33,12 @@ route(/^\/finance\/(\d+)$/, async (fid) => {
 });
 
 // ---------- الخزن ----------
+// جدول التقسيم حسب الطريقة: كاش / بال باي / جوال باي
+function methodTable(list) {
+  return table(['الطريقة', 'انجمع', 'طلع', 'ضل'], list.map((m) => [h('b', null, m.label), money(m.tin, 'c-in'), money(m.tout, 'c-out'), money(m.balance)]),
+    { foot: ['الإجمالي', money(list.reduce((x, m) => x + m.tin, 0), 'c-in'), money(list.reduce((x, m) => x + m.tout, 0), 'c-out'), money(list.reduce((x, m) => x + m.balance, 0))] });
+}
+
 route(/^\/treasury$/, async () => {
   const list = await GET('/treasury');
   const total = list.reduce((s, t) => s + t.current, 0);
@@ -45,13 +51,10 @@ route(/^\/treasury$/, async () => {
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } }, kpi('إجمالي أرصدة كل الخزن', money(total))),
     h('div', { class: 'grid g2' }, list.map((t) => h('div', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, `خزنة ${t.facility.name}`), h('span', { class: 'sp' }), noTag(t.facility.prefix)),
-      h('div', { class: 'grid g3 mt' },
-        kpi('الرصيد الافتتاحي', money(t.opening), 'plain'), kpi('إجمالي الداخل', money(t.total_in), 'in'), kpi('إجمالي الخارج', money(t.total_out), 'out')),
-      h('div', { class: 'kpi', style: { marginTop: '10px' } }, h('div', { class: 'l' }, 'الرصيد الحالي'), h('div', { class: 'v' }, money(t.current))),
-      h('h3', { class: 'mt' }, 'أين يوجد المال'),
-      table(['الحساب', 'النوع', 'الرصيد'], t.accounts.filter((a) => a.active || a.balance).map((a) => [
-        h('span', null, '📍 ', a.name, a.active ? '' : ' (معطل)'), S.L.accountType[a.type], money(a.balance)]),
-      { onRow: (i) => go(`#/account/${t.accounts.filter((a) => a.active || a.balance)[i].id}`) }),
+      h('div', { class: 'grid g3 kpis big mt' },
+        kpi('إجمالي اللي انجمع', money(t.total_in), 'in'), kpi('إجمالي اللي طلع', money(t.total_out), 'out'), kpi('اللي ضل', money(t.current))),
+      h('h3', { class: 'mt' }, 'وين المصاري'),
+      methodTable(t.by_method),
       h('div', { class: 'actions mt' }, h('a', { class: 'btn sec', href: `#/treasury/${t.facility.id}` }, 'صفحة الخزنة وكشفها'))))));
 });
 
@@ -92,15 +95,18 @@ route(/^\/treasury\/(\d+)$/, async (fid) => {
         h('a', { class: 'btn sec', href: `#/statement?facility_id=${f.id}` }, 'كشف الخزنة PDF'))),
     h('div', { class: 'card tight' }, h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); go(`#/treasury/${fid}${qs({ from: from.value, to: to.value })}`); } },
       field('من', from), field('إلى', to), h('button', { class: 'btn' }, 'عرض'), h('a', { class: 'btn ghost', href: `#/treasury/${fid}` }, 'كل الفترات'))),
-    h('div', { class: 'grid g4 kpis', style: { marginBottom: '16px' } },
-      kpi(q.from ? 'رصيد بداية الفترة' : 'الرصيد الافتتاحي', money(t.opening), 'plain'),
-      kpi('إجمالي المبالغ الداخلة', money(t.total_in), 'in'), kpi('إجمالي المبالغ الخارجة', money(t.total_out), 'out'),
-      kpi(q.to ? 'الرصيد في نهاية الفترة' : 'الرصيد الحالي', money(t.closing))),
-    h('div', { class: 'card' }, h('h3', null, 'مكان وجود المال'),
-      table(['الحساب', 'النوع', 'الهاتف', 'ملاحظات', 'الرصيد', ''], t.accounts.map((a) => [
-        h('span', null, '📍 ', a.name, a.active ? '' : ' (معطل)'), S.L.accountType[a.type], a.phone || '', a.notes || '', money(a.balance),
+    h('div', { class: 'grid g3 kpis big', style: { marginBottom: '8px' } },
+      kpi('إجمالي اللي انجمع', money(t.total_in), 'in'), kpi('إجمالي اللي طلع', money(t.total_out), 'out'),
+      kpi('اللي ضل', money(t.closing))),
+    t.opening ? h('p', { class: 'hint' }, `اللي ضل يشمل رصيداً سابقاً بقيمة ${fmt(t.opening)}`) : '',
+    h('div', { class: 'card' }, h('h3', null, 'وين المصاري'), methodTable(t.by_method),
+      h('h3', { class: 'mt' }, 'تفصيل الحسابات'),
+      table(['الحساب', 'النوع', 'انجمع', 'طلع', 'ضل', ''], t.accounts.map((a) => [
+        h('span', null, '📍 ', a.name, a.active ? '' : ' (معطل)', a.phone ? h('span', { class: 'hint' }, ` ${a.phone}`) : ''), S.L.accountType[a.type],
+        money(a.tin, 'c-in'), money(a.tout, 'c-out'), money(a.balance),
         isAdmin() ? h('button', { class: 'btn sm ghost', onclick: (e) => { e.stopPropagation(); accountModal(a); } }, 'تعديل') : '']),
       { onRow: (i) => go(`#/account/${t.accounts[i].id}`) })),
+    h('h2', null, 'التوضيح'),
     h('div', { class: 'card' }, h('h3', null, 'جميع عمليات الإيداع والصرف'), txnsTable(t.txns)));
 });
 
@@ -118,8 +124,9 @@ route(/^\/account\/(\d+)$/, async (id) => {
     a.notes ? h('div', { class: 'card tight' }, a.notes) : '',
     h('div', { class: 'card tight' }, h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); go(`#/account/${id}${qs({ from: from.value, to: to.value })}`); } },
       field('من', from), field('إلى', to), h('button', { class: 'btn' }, 'عرض'))),
-    h('div', { class: 'grid g4 kpis', style: { marginBottom: '16px' } },
-      kpi('رصيد البداية', money(s.opening), 'plain'), kpi('الداخل', money(s.total_in), 'in'), kpi('الخارج', money(s.total_out), 'out'), kpi('الرصيد', money(s.closing))),
+    h('div', { class: 'grid g3 kpis big', style: { marginBottom: '16px' } },
+      kpi('إجمالي اللي انجمع', money(s.total_in), 'in'), kpi('إجمالي اللي طلع', money(s.total_out), 'out'), kpi('اللي ضل', money(s.closing))),
+    s.opening ? h('p', { class: 'hint' }, `يشمل رصيداً سابقاً بقيمة ${fmt(s.opening)}`) : '',
     h('div', { class: 'card' }, table(['الرقم', 'التاريخ', 'النوع', 'من / إلى', 'المرجع', 'داخل', 'خارج', 'الرصيد', 'الموظف', 'ملاحظات'],
       s.rows.map((t) => [noTag(t.no), t.op_date, txnLabel(t) + (t.category && t.kind !== 'payment' ? ` — ${t.category}` : ''), t.party || '', noTag(t.ref_no),
         t.direction === 'in' ? money(t.amount, 'c-in') : '', t.direction === 'out' ? money(t.amount, 'c-out') : '', money(t.running), t.user_name,
@@ -135,7 +142,7 @@ route(/^\/fundings$/, async () => {
   const addModal = () => {
     const facSel = sel('facility_id', facs.filter((f) => f.kind !== 'general').map((f) => [f.id, f.name]));
     const accBox = h('div');
-    const setAcc = () => { accBox.innerHTML = ''; accBox.append(field('الحساب الذي استلم المبلغ', accountSel(facSel.value), { req: true })); };
+    const setAcc = () => { accBox.innerHTML = ''; accBox.append(field('وين وصل المبلغ', accountSel(facSel.value), { req: true })); };
     facSel.onchange = setAcc;
     setAcc();
     const srcSel = sel('source_account_id', [['', 'جهة خارجية (ليست من حسابات النظام)'], ...S.meta.all_accounts.map((a) => [a.id, `${a.name} — ${a.facility_name}`])],
@@ -156,7 +163,7 @@ route(/^\/fundings$/, async () => {
   const repay = (f) => modal(`سداد التمويل ${f.no}`, [
     h('p', null, 'المتبقي: ', money(f.outstanding, 'c-debt')),
     field('المبلغ', moneyInp('amount', { value: major(f.outstanding), required: true }), { req: true }),
-    field('الحساب الذي يخرج منه السداد', accountSel(f.facility_id), { req: true }),
+    field('من وين يطلع السداد', accountSel(f.facility_id), { req: true }),
     field('التاريخ', dateInp('op_date')), field('ملاحظات', area('notes')),
     h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'allow_negative' }), 'السماح حتى لو كان الرصيد غير كافٍ'),
   ], async (d, idem) => { await api('POST', `/fundings/${f.id}/repay`, d, { idem }); closeModal(); toast('تم تسجيل السداد', 'ok'); reload(); }, { submitText: 'تسجيل السداد' });

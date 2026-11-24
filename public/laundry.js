@@ -90,7 +90,7 @@ async function orderForm(onSaved) {
     h('div', { class: 'grid g2' }, customerPicker(), field('السعر', price, { req: true })),
     h('div', { class: 'grid g2' },
       field('المبلغ المدفوع الآن (مقدماً)', h('div', { class: 'row' }, h('div', { style: { flex: 1 } }, paid), full)),
-      field('الحساب الذي استلم المبلغ', accountSel(f.id))),
+      field('وين وصل المبلغ', accountSel(f.id))),
     h('p', null, status),
     h('div', { class: 'grid g2' }, field('تاريخ الطلب', dateInp('order_date')), field('ملاحظات', area('notes'))),
     extraBox(), btn);

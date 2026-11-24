@@ -155,11 +155,20 @@ const LABELS = {
     payment: 'دفعة', income: 'إيداع', expense: 'مصروف', refund: 'مرتجع',
     funding: 'تمويل وارد', funding_out: 'تمويل صادر', funding_repay: 'سداد تمويل', funding_repay_in: 'استرداد تمويل',
   },
-  accountType: { safe: 'خزنة', bank: 'حساب بنكي', employee: 'حساب موظف', reserve: 'حساب احتياطي', other: 'أخرى' },
+  accountType: {
+    safe: 'كاش (خزنة)', employee: 'كاش مع موظف', palpay: 'بال باي', jawwalpay: 'جوال باي', bank: 'حساب بنكي', reserve: 'حساب احتياطي', other: 'أخرى',
+  },
+  method: { cash: 'كاش', palpay: 'بال باي', jawwalpay: 'جوال باي', bank: 'بنك', reserve: 'احتياطي', other: 'أخرى' },
   cancelAction: { refund_all: 'إرجاع كامل المبلغ', keep: 'الاحتفاظ بالمبلغ', partial: 'خصم وإرجاع الباقي', none: 'لا توجد مبالغ' },
 };
 
+// طريقة وصول المال حسب نوع الحساب: الخزنة وحساب الموظف كلاهما كاش
+const METHOD_OF = { safe: 'cash', employee: 'cash', palpay: 'palpay', jawwalpay: 'jawwalpay', bank: 'bank', reserve: 'reserve', other: 'other' };
+const methodOf = (type) => METHOD_OF[type] || 'other';
+const METHOD_ORDER = ['cash', 'palpay', 'jawwalpay', 'bank', 'reserve', 'other'];
+
 module.exports = {
+  methodOf, METHOD_ORDER,
   HttpError, bad, getSetting, setSetting, tz, localParts, today, isDate, addDays, daysBetween, reqDate,
   TIME_RE, toMinor, toMajor, fmt, str, nextNo, audit, addAlert, markStale, encrypt, decrypt, LABELS, nowISO,
 };

@@ -3,8 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { db, DATA_DIR, nowISO } = require('../db');
 const { addAlert, audit, HttpError, fmt } = require('../util');
-const { buildPeriodReport, buildStatement } = require('./data');
-const { renderReport } = require('./html');
+const { buildPeriodReport, buildStatement, resolvePeriod, reportFacilities } = require('./data');
+const { renderReport, docTitle } = require('./html');
 const { htmlToPdf } = require('./pdf');
 const telegram = require('../telegram');
 
@@ -23,35 +23,75 @@ async function renderPdf(kind, params) {
   return { data, pdf };
 }
 
-/** إنشاء تقرير PDF وحفظه في السجل */
-async function createReport({ kind, params, user = null, auto = false, type = null }) {
+/** إنشاء ملف PDF واحد (كشف منشأة أو الملخص) وحفظه في السجل */
+async function createReport({ kind, params, user = null, auto = false, type = null, part = '' }) {
   const { data, pdf } = await renderPdf(kind, params);
   const rtype = type || (kind === 'statement' ? 'statement' : 'period');
-  const existing = auto ? db.prepare('SELECT id FROM reports WHERE auto=1 AND type=? AND period_from=? AND period_to=?').get(rtype, data.from, data.to) : null;
+  const title = docTitle(data, data.sections && data.sections[0]);
+  const existing = auto ? db.prepare('SELECT id FROM reports WHERE auto=1 AND type=? AND period_from=? AND period_to=? AND part=?').get(rtype, data.from, data.to, part) : null;
   let id;
   if (existing) {
     id = existing.id;
-    db.prepare('UPDATE reports SET title=?, params=?, created_at=?, stale=0 WHERE id=?').run(data.title, JSON.stringify({ kind, params }), nowISO(), id);
+    db.prepare('UPDATE reports SET title=?, params=?, created_at=?, stale=0 WHERE id=?').run(title, JSON.stringify({ kind, params }), nowISO(), id);
   } else {
-    id = db.prepare(`INSERT INTO reports (type, title, period_from, period_to, params, auto, created_by, created_at)
-      VALUES (?,?,?,?,?,?,?,?)`).run(rtype, data.title, data.from, data.to, JSON.stringify({ kind, params }), auto ? 1 : 0,
-      user ? user.id : null, nowISO()).lastInsertRowid;
+    id = db.prepare(`INSERT INTO reports (type, title, period_from, period_to, params, auto, created_by, created_at, part)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(rtype, title, data.from, data.to, JSON.stringify({ kind, params }), auto ? 1 : 0,
+      user ? user.id : null, nowISO(), part).lastInsertRowid;
   }
-  const name = `report-${id}.pdf`;
   fs.writeFileSync(filePath(id), pdf);
-  db.prepare('UPDATE reports SET file_name=? WHERE id=?').run(name, id);
-  if (user) audit(user, 'create', 'report', id, { summary: `إنشاء تقرير: ${data.title}` });
-  return { id, data };
+  db.prepare('UPDATE reports SET file_name=? WHERE id=?').run(`report-${id}.pdf`, id);
+  if (user) audit(user, 'create', 'report', id, { summary: `إنشاء تقرير: ${title}` });
+  return { id, data, title };
+}
+
+/** كل منشأة كشف مستقل تماماً، والملخص الإجمالي ملف منفصل */
+function splitParts(kind, params) {
+  if (params.facility_id) return [{ part: `f${params.facility_id}`, params }];
+  if (params.account_id) return [{ part: `a${params.account_id}`, params }];
+  const { from, to } = resolvePeriod(params.preset ? params : { ...params, preset: 'all' });
+  const list = reportFacilities(from, to).map((f) => ({ part: `f${f.id}`, params: { ...params, facility_id: String(f.id) } }));
+  if (kind === 'period') list.push({ part: 'summary', params: { ...params, part: 'summary' } });
+  return list;
+}
+
+async function createReportSet({ kind, params, user = null, auto = false, type = null, skipExisting = false }) {
+  const out = [];
+  for (const p of splitParts(kind, params)) {
+    if (skipExisting) {
+      const { from, to } = resolvePeriod(p.params.preset ? p.params : { ...p.params, preset: 'all' });
+      const ex = db.prepare('SELECT id FROM reports WHERE auto=1 AND type=? AND period_from=? AND period_to=? AND part=? AND file_name IS NOT NULL')
+        .get(type, from, to, p.part);
+      if (ex) continue;
+    }
+    out.push(await createReport({ kind, params: p.params, user, auto, type, part: p.part }));
+  }
+  return out;
 }
 
 function caption(r, data) {
   let c = `📊 ${r.title}`;
-  if (data && data.summary) {
-    const S = data.summary;
-    c += `\nالداخل: ${fmt(S.tin)} | الخارج: ${fmt(S.tout)} | الصافي: ${fmt(S.net)}`;
-    c += `\nإجمالي الأرصدة: ${fmt(S.balances)} | ديون الزبائن: ${fmt(S.receivables)}`;
-  } else if (data && data.totals) {
-    c += `\nالافتتاحي: ${fmt(data.opening)} | الداخل: ${fmt(data.totals.tin)} | الخارج: ${fmt(data.totals.tout)} | المتبقي: ${fmt(data.closing)}`;
+  if (data) {
+    let tin; let tout; let left; let methods;
+    if (data.type === 'statement') {
+      ({ tin, tout } = data.totals); left = data.closing; methods = data.by_method;
+    } else if (data.part === 'summary') {
+      const S = data.summary;
+      tin = S.tin; tout = S.tout; left = S.balances;
+      const m = new Map();
+      for (const s of data.sections) for (const x of s.by_method) {
+        const y = m.get(x.method) || { label: x.label, closing: 0 };
+        y.closing += x.closing;
+        m.set(x.method, y);
+      }
+      methods = [...m.values()];
+    } else if (data.sections && data.sections[0]) {
+      const s = data.sections[0];
+      tin = s.totals.tin; tout = s.totals.tout; left = s.closing; methods = s.by_method;
+    }
+    if (tin !== undefined) {
+      c += `\nانجمع: ${fmt(tin)} | طلع: ${fmt(tout)} | ضل: ${fmt(left)}`;
+      if (methods && methods.length) c += `\n${methods.map((m) => `${m.label} ${fmt(m.closing)}`).join(' · ')}`;
+    }
   }
   if (r.stale) c += '\n⚠️ نسخة معدّلة بعد تسجيل عمليات متأخرة';
   return c;
@@ -85,10 +125,10 @@ async function regenerate(id, user) {
   const p = JSON.parse(r.params);
   const { data, pdf } = await renderPdf(p.kind, p.params);
   fs.writeFileSync(filePath(id), pdf);
-  db.prepare("UPDATE reports SET title=?, created_at=?, stale=0, file_name=? WHERE id=?").run(data.title, nowISO(), `report-${id}.pdf`, id);
+  db.prepare("UPDATE reports SET title=?, created_at=?, stale=0, file_name=? WHERE id=?").run(docTitle(data, data.sections && data.sections[0]), nowISO(), `report-${id}.pdf`, id);
   db.prepare("UPDATE alerts SET resolved=1 WHERE type='stale_report' AND ref_id=?").run(id);
   if (user) audit(user, 'update', 'report', id, { summary: `إعادة توليد تقرير: ${data.title}` });
   return { id, data };
 }
 
-module.exports = { createReport, sendReport, regenerate, filePath, build, REPORTS_DIR };
+module.exports = { createReport, createReportSet, sendReport, regenerate, filePath, build, REPORTS_DIR };

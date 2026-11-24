@@ -35,17 +35,25 @@ function reportActions(form, kind, preview) {
   const params = () => ({ kind, ...cleanParams(formData(form)) });
   const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; } };
   const view = h('button', { type: 'button', class: 'btn sec', onclick: () => { preview.src = `/api/reports/view${qs(params())}`; preview.classList.remove('hide'); } }, '👁 عرض');
+  // كل منشأة ملف مستقل تماماً + الملخص ملف منفصل
+  const filesModal = (items, sent) => modal(sent ? 'نتيجة الإرسال عبر Telegram' : 'الملفات الجاهزة', [
+    h('p', { class: 'hint' }, items.length > 1 ? 'كل كشف ملف مستقل:' : ''),
+    ...items.map((it) => h('div', { class: 'row', style: { borderBottom: '1px solid var(--line)', padding: '8px 0' } },
+      h('span', { class: 'sp' }, '📄 ', it.title),
+      sent ? (it.sent && it.sent.ok ? badge('sent', 'أُرسل') : h('span', { class: 'c-out hint' }, `فشل: ${it.sent?.error || ''}`)) : '',
+      h('a', { class: 'btn sm sec', href: `/api/reports/${it.id}/pdf`, target: '_blank' }, 'فتح'),
+      h('a', { class: 'btn sm ghost', href: `/api/reports/${it.id}/pdf?dl=1` }, 'تنزيل'))),
+  ]);
   const pdf = h('button', { type: 'button', class: 'btn', onclick: (e) => busy(e.currentTarget, async () => {
-    const w = window.open('', '_blank');
-    toast('جارِ إنشاء ملف PDF…');
+    toast('جارِ إنشاء الملفات…');
     const r = await api('POST', '/reports/generate', params());
-    if (w) w.location = `/api/reports/${r.id}/pdf`; else location.href = `/api/reports/${r.id}/pdf?dl=1`;
+    filesModal(r.items, false);
   }) }, '📄 إنشاء PDF');
   const xls = h('button', { type: 'button', class: 'btn sec', onclick: () => { location.href = `/api/reports/excel${qs(params())}`; } }, '📗 Excel');
   const tg = isAdmin() ? h('button', { type: 'button', class: 'btn in', onclick: (e) => busy(e.currentTarget, async () => {
     toast('جارِ الإنشاء والإرسال…');
     const r = await api('POST', '/reports/generate', { ...params(), send: true });
-    if (r.sent && r.sent.ok) toast('تم إرسال التقرير عبر تيليجرام', 'ok'); else toast(`تم إنشاء التقرير لكن تعذر الإرسال: ${r.sent?.error || ''}`, 'err');
+    filesModal(r.items, true);
   }) }, '✈️ إرسال التقرير عبر Telegram') : '';
   return h('div', { class: 'actions mt' }, view, pdf, xls, tg);
 }
@@ -82,7 +90,7 @@ route(/^\/reports$/, async () => {
   form.append(reportActions(form, 'period', preview));
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, '📊 التقارير'), isAdmin() ? h('a', { class: 'btn lg', href: '#/statement' }, '📄 كشف حساب شامل PDF') : ''),
-    h('p', { class: 'hint' }, 'التقرير اليومي يُنشأ تلقائياً بعد منتصف الليل عن اليوم المنتهي (00:00 — 23:59) مع ملخص تراكمي للشهر والسنة، ويُرسل عبر تيليجرام إن كان مفعلاً.'),
+    h('p', { class: 'hint' }, 'كل منشأة لها كشف مستقل تماماً (الصالة، المغسلة، الملعب) والملخص الإجمالي ملف منفصل. التقرير اليومي يُنشأ تلقائياً بعد منتصف الليل عن اليوم المنتهي (00:00 — 23:59) ويُرسل كل ملف لحاله عبر تيليجرام.'),
     form, preview,
     h('div', { class: 'card mt' }, h('h3', null, 'التقارير السابقة'), await reportHistory()));
 });
@@ -110,7 +118,7 @@ route(/^\/statement$/, async () => {
   form.append(actions);
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, '📄 كشف حساب شامل PDF')),
-    h('p', { class: 'hint' }, 'يتضمن: الرصيد الافتتاحي، ما تم جمعه وصرفه، الرصيد المتبقي، مكان وجود الأموال، كل الإيداعات والمصروفات بالتاريخ مع الرصيد المتحرك، الموظفين، الديون والالتزامات، والتمويل الخارجي.'),
+    h('p', { class: 'hint' }, 'الكشف يبدأ بالرصيد (اللي انجمع — اللي طلع — اللي ضل)، ثم وين وصلت المصاري (كاش / بال باي / جوال باي)، ثم التوضيح: كل معاملة بنوعها وتاريخ الدفع وتاريخ الحجز. عند اختيار "جميع المنشآت" يصدر كشف مستقل لكل منشأة.'),
     form, preview);
 });
 

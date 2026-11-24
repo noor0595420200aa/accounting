@@ -15,7 +15,8 @@ function sheet(wb, name, columns, rows) {
 
 const TXN_COLS = [
   ['الرقم', 'no', 10], ['التاريخ', 'op_date', 12], ['المنشأة', 'facility_name', 18], ['النوع', 'type', 16],
-  ['التصنيف', 'category', 16], ['من / إلى', 'party', 22], ['المرجع', 'ref_no', 10], ['الحساب', 'account_name', 18],
+  ['التصنيف', 'category', 16], ['من / إلى', 'party', 22], ['المرجع', 'ref_no', 10], ['تاريخ الحجز', 'booking_date', 12],
+  ['الموعد / الخدمة', 'event', 20], ['وين وصلت / من وين', 'account_name', 16],
   ['داخل', 'in', 12, true], ['خارج', 'out', 12, true], ['الرصيد', 'running', 13, true], ['الموظف', 'user_name', 14],
   ['الحالة', 'status', 10], ['ملاحظات', 'notes', 30],
 ];
@@ -31,11 +32,13 @@ async function reportToExcel(R) {
   if (R.type === 'statement') {
     sheet(wb, 'الملخص', [['البند', 'k', 40], ['القيمة', 'v', 18, true]], [
       { k: R.title }, { k: `الفترة ${R.from} — ${R.to}` },
-      { k: 'الرصيد الافتتاحي', v: toMajor(R.opening) }, { k: 'إجمالي ما تم جمعه', v: toMajor(R.totals.tin) },
-      { k: 'إجمالي ما تم صرفه', v: toMajor(R.totals.tout) }, { k: 'الرصيد المتبقي', v: toMajor(R.closing) },
+      { k: 'إجمالي اللي انجمع', v: toMajor(R.totals.tin) }, { k: 'إجمالي اللي طلع', v: toMajor(R.totals.tout) },
+      { k: 'اللي ضل', v: toMajor(R.closing) }, { k: 'منها رصيد سابق', v: toMajor(R.opening) },
       { k: 'ديون الزبائن', v: toMajor(R.receivables) }, { k: 'تمويل خارجي غير مسدد', v: toMajor(R.funding_external) },
       { k: 'صافي الأصول بعد الالتزامات', v: toMajor(R.net_assets) },
     ]);
+    sheet(wb, 'وين المصاري', [['الطريقة', 'm', 14], ['انجمع', 'i', 14, true], ['طلع', 'x', 14, true], ['ضل', 'c', 14, true]],
+      R.by_method.map((m) => ({ m: m.label, i: toMajor(m.tin), x: toMajor(m.tout), c: toMajor(m.closing) })));
     sheet(wb, 'الحسابات', [['الحساب', 'name', 22], ['المنشأة', 'facility_name', 18], ['النوع', 'type_label', 14], ['الهاتف', 'phone', 14],
       ['رصيد البداية', 'o', 14, true], ['الرصيد الحالي', 'c', 14, true]],
     R.accounts.map((a) => ({ ...a, o: toMajor(a.opening), c: toMajor(a.closing) })));
@@ -58,6 +61,8 @@ async function reportToExcel(R) {
       sheet(wb, 'الأيام', [['التاريخ', 'date', 12], ['داخل', 'i', 14, true], ['خارج', 'x', 14, true], ['صافي', 'n', 14, true]],
         R.days.map((d) => ({ date: d.date, i: toMajor(d.tin), x: toMajor(d.tout), n: toMajor(d.tin - d.tout) })));
     }
+    sheet(wb, 'وين المصاري', [['المنشأة', 'f', 22], ['الطريقة', 'm', 14], ['انجمع', 'i', 14, true], ['طلع', 'x', 14, true], ['ضل', 'c', 14, true]],
+      R.sections.flatMap((s) => s.by_method.map((m) => ({ f: s.facility.name, m: m.label, i: toMajor(m.tin), x: toMajor(m.tout), c: toMajor(m.closing) }))));
     for (const s of R.sections) {
       sheet(wb, s.facility.name, TXN_COLS, [...s.ins, ...s.outs, ...s.cancelled].sort((a, b) => (a.op_date + a.no).localeCompare(b.op_date + b.no)).map(txnRow));
     }

@@ -244,9 +244,9 @@ CREATE TABLE IF NOT EXISTS reports (
   sent_at TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_attempt_at TEXT,
-  stale INTEGER NOT NULL DEFAULT 0
+  stale INTEGER NOT NULL DEFAULT 0,
+  part TEXT NOT NULL DEFAULT ''          -- f<id> لكشف منشأة، summary للملخص الإجمالي
 );
-CREATE UNIQUE INDEX IF NOT EXISTS reports_auto ON reports(type, period_from, period_to) WHERE auto = 1;
 
 -- منع تكرار تسجيل نفس العملية (ضغط الزر مرتين)
 CREATE TABLE IF NOT EXISTS idem_keys (
@@ -286,9 +286,12 @@ function seed() {
 
     const insA = db.prepare(`INSERT INTO accounts (facility_id, name, type, opening_balance, opening_date, created_at)
       VALUES (?,?,?,0,?,?)`);
-    insA.run(1, 'خزنة الصالة', 'safe', today, now);
-    insA.run(2, 'خزنة المغسلة', 'safe', today, now);
-    insA.run(3, 'خزنة الملعب', 'safe', today, now);
+    // لكل منشأة: كاش + بال باي + جوال باي
+    for (const f of [1, 2, 3]) {
+      insA.run(f, 'كاش', 'safe', today, now);
+      insA.run(f, 'بال باي', 'palpay', today, now);
+      insA.run(f, 'جوال باي', 'jawwalpay', today, now);
+    }
     insA.run(4, 'الحساب الاحتياطي', 'reserve', today, now);
 
     const insC = db.prepare('INSERT INTO categories (facility_id, kind, name) VALUES (?,?,?)');
@@ -327,5 +330,25 @@ function seed() {
   tx();
 }
 seed();
+
+// ترقيات لقواعد البيانات الموجودة
+function migrate() {
+  const cols = db.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+  if (!cols.includes('part')) db.exec("ALTER TABLE reports ADD COLUMN part TEXT NOT NULL DEFAULT ''");
+  db.exec('DROP INDEX IF EXISTS reports_auto');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS reports_auto_part ON reports(type, period_from, period_to, part) WHERE auto = 1');
+  // إضافة بال باي وجوال باي للمنشآت التي لا تملكها
+  const now = nowISO();
+  for (const f of db.prepare("SELECT id FROM facilities WHERE kind IN ('hall','laundry','field')").all()) {
+    for (const [type, name] of [['palpay', 'بال باي'], ['jawwalpay', 'جوال باي']]) {
+      if (!db.prepare('SELECT id FROM accounts WHERE facility_id=? AND type=?').get(f.id, type)) {
+        db.prepare(`INSERT INTO accounts (facility_id, name, type, opening_balance, opening_date, created_at) VALUES (?,?,?,0,?,?)`)
+          .run(f.id, name, type, now.slice(0, 10), now);
+      }
+    }
+  }
+  db.prepare("UPDATE accounts SET name='كاش' WHERE type='safe' AND name IN ('خزنة الصالة','خزنة المغسلة','خزنة الملعب')").run();
+}
+migrate();
 
 module.exports = { db, DATA_DIR, DB_PATH, nowISO };

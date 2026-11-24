@@ -1,22 +1,24 @@
 'use strict';
 const { db, nowISO } = require('./db');
 const { getSetting, localParts, addDays, addAlert } = require('./util');
-const { createReport, sendReport } = require('./reports/service');
+const { createReportSet, sendReport } = require('./reports/service');
 const telegram = require('./telegram');
 const backup = require('./backup');
 
 let running = false;
 
 async function autoReport(type, from, to, params) {
-  const exists = db.prepare('SELECT id FROM reports WHERE auto=1 AND type=? AND period_from=? AND period_to=?').get(type, from, to);
-  if (exists) return;
   try {
-    const { id, data } = await createReport({ kind: 'period', params, auto: true, type });
-    if (telegram.config().enabled) await sendReport(id, null, data).catch(() => {});
+    // كل منشأة ملف مستقل + الملخص الإجمالي (ما أُنشئ سابقاً لا يتكرر)
+    const set = await createReportSet({ kind: 'period', params, auto: true, type, skipExisting: true });
+    if (telegram.config().enabled) {
+      for (const x of set) await sendReport(x.id, null, x.data).catch(() => {});
+    }
   } catch (e) {
-    // نسجل محاولة فاشلة حتى لا نكرر بشكل لا نهائي، وننبه المدير
-    db.prepare(`INSERT OR IGNORE INTO reports (type, title, period_from, period_to, params, auto, created_at, telegram_status, telegram_error)
-      VALUES (?,?,?,?,?,1,?, 'failed', ?)`).run(type, `تقرير ${from} — ${to}`, from, to, JSON.stringify({ kind: 'period', params }), nowISO(), String(e.message || e));
+    const exists = db.prepare("SELECT id FROM reports WHERE auto=1 AND type=? AND period_from=? AND period_to=? AND part='error'").get(type, from, to);
+    if (exists) return;
+    db.prepare(`INSERT INTO reports (type, title, period_from, period_to, params, auto, created_at, telegram_status, telegram_error, part)
+      VALUES (?,?,?,?,?,1,?, 'failed', ?, 'error')`).run(type, `تقرير ${from} — ${to}`, from, to, JSON.stringify({ kind: 'period', params }), nowISO(), String(e.message || e));
     addAlert('report_failed', `تعذر إنشاء التقرير التلقائي (${from} — ${to}): ${e.message || e}`);
   }
 }

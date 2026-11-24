@@ -4,7 +4,7 @@ const fs = require('fs');
 const { db } = require('../db');
 const { HttpError } = require('../util');
 const { isAdmin } = require('../auth');
-const { build, createReport, sendReport, regenerate, filePath } = require('../reports/service');
+const { build, createReportSet, sendReport, regenerate, filePath } = require('../reports/service');
 const { renderReport } = require('../reports/html');
 const { reportToExcel } = require('../reports/excel');
 
@@ -39,13 +39,15 @@ r.get('/excel', async (req, res) => {
 
 r.post('/generate', async (req, res) => {
   const { kind, params: p } = params(req, req.body || {});
-  const { id } = await createReport({ kind, params: p, user: req.user });
-  let sent = null;
-  if (req.body.send) {
-    if (!isAdmin(req.user)) throw new HttpError(403, 'الإرسال للمدير فقط');
-    sent = await sendReport(id, req.user).catch((e) => ({ ok: false, error: e.message }));
+  if (req.body.send && !isAdmin(req.user)) throw new HttpError(403, 'الإرسال للمدير فقط');
+  const set = await createReportSet({ kind, params: p, user: req.user });
+  const items = [];
+  for (const x of set) {
+    const item = { id: x.id, title: x.title };
+    if (req.body.send) item.sent = await sendReport(x.id, req.user, x.data).catch((e) => ({ ok: false, error: e.message }));
+    items.push(item);
   }
-  res.json({ id, sent });
+  res.json({ items });
 });
 
 r.get('/', (req, res) => {

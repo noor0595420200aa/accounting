@@ -213,8 +213,24 @@ function treasury(fid, from, to) {
   const total_in = sums.filter((x) => x.direction === 'in').reduce((s, x) => s + x.s, 0);
   const total_out = sums.filter((x) => x.direction === 'out').reduce((s, x) => s + x.s, 0);
   const byKind = Object.fromEntries(sums.map((x) => [x.kind, x.s]));
-  for (const a of accounts) a.balance = L.accountBalance(a.id, to);
+  const perAcc = db.prepare(`SELECT account_id, direction, COALESCE(SUM(amount),0) s FROM txns WHERE ${where.join(' AND ')} GROUP BY account_id, direction`).all(...args);
+  const { methodOf, LABELS: LB } = require('../util');
+  for (const a of accounts) {
+    a.balance = L.accountBalance(a.id, to);
+    a.tin = perAcc.filter((x) => x.account_id === a.id && x.direction === 'in').reduce((t, x) => t + x.s, 0);
+    a.tout = perAcc.filter((x) => x.account_id === a.id && x.direction === 'out').reduce((t, x) => t + x.s, 0);
+    a.method = methodOf(a.type);
+    a.method_label = LB.method[a.method];
+  }
+  // تقسيم حسب الطريقة: كاش / بال باي / جوال باي
+  const mm = new Map();
+  for (const a of accounts) {
+    const x = mm.get(a.method) || { method: a.method, label: a.method_label, tin: 0, tout: 0, balance: 0 };
+    x.tin += a.tin; x.tout += a.tout; x.balance += a.balance;
+    mm.set(a.method, x);
+  }
   return {
+    by_method: [...mm.values()],
     facility: f, accounts, opening, total_in, total_out, by_kind: byKind,
     closing: opening + total_in - total_out,
     current: accounts.reduce((s, a) => s + L.accountBalance(a.id), 0),

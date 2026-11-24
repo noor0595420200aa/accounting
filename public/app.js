@@ -82,7 +82,8 @@ const qs = (o) => {
 
 // ---------------- النماذج ----------------
 function field(label, input, { req = false, hint = '' } = {}) {
-  return h('label', { class: 'f' }, h('span', null, label, req ? h('span', { class: 'req' }, ' *') : ''), input, hint ? h('div', { class: 'hint' }, hint) : '');
+  const tag = input instanceof Element && input.classList.contains('radios') ? 'div' : 'label';
+  return h(tag, { class: 'f' }, h('span', null, label, req ? h('span', { class: 'req' }, ' *') : ''), input, hint ? h('div', { class: 'hint' }, hint) : '');
 }
 const inp = (name, attrs = {}) => h('input', { name, ...attrs });
 const moneyInp = (name, attrs = {}) => h('input', { name, type: 'number', step: '0.01', min: '0', inputmode: 'decimal', ...attrs });
@@ -101,8 +102,13 @@ function sel(name, options, value) {
 function accountSel(facilityId, name = 'account_id', value) {
   const f = S.meta.facilities.find((x) => x.id === Number(facilityId));
   const accs = f ? f.accounts : [];
-  // الافتراضي: الخزنة الرئيسية للمنشأة، ويمكن للموظف اختيار حساب آخر
+  // الافتراضي: الكاش، ويضغط الموظف على بال باي أو جوال باي إذا وصل المبلغ عليهم
   const def = accs.find((a) => a.type === 'safe') || accs[0];
+  if (accs.length && accs.length <= 6) {
+    const cur = String(value || (def ? def.id : ''));
+    return h('div', { class: 'radios' }, accs.map((a) => h('label', { class: 'pick' },
+      h('input', { type: 'radio', name, value: a.id, checked: String(a.id) === cur }), h('span', null, a.name))));
+  }
   return sel(name, [['', '— اختر الحساب —'], ...accs.map((a) => [a.id, a.name])], value || (def ? def.id : ''));
 }
 // زر "أخرى" لإضافة تفاصيل حرة

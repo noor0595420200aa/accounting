@@ -3,7 +3,7 @@
 
 // جدول الدفعات/الحركات المرتبطة بحجز أو طلب
 function paymentsTable(list, onChange) {
-  return table(['الرقم', 'التاريخ', 'النوع', 'المبلغ', 'الحساب', 'الموظف', 'ملاحظات', ''],
+  return table(['الرقم', 'تاريخ الدفع', 'نوع المعاملة', 'المبلغ', 'وين وصلت', 'الموظف', 'ملاحظات', ''],
     list.map((t) => [
       noTag(t.no), t.op_date, txnLabel(t), money(t.amount, t.direction === 'in' ? 'c-in' : 'c-out'), t.account_name, t.user_name,
       t.status === 'cancelled' ? `ملغاة: ${t.cancel_reason || ''}` : (t.notes || ''),
@@ -31,7 +31,7 @@ function payModal({ title, url, facilityId, remaining, payTypes, onDone }) {
     h('p', null, 'المتبقي: ', money(remaining, 'c-debt')),
     field('المبلغ المدفوع', moneyInp('amount', { value: major(remaining), required: true }), { req: true }),
     payTypes ? field('نوع الدفعة', sel('pay_type', payTypes)) : '',
-    field('الحساب الذي استلم المبلغ', accountSel(facilityId), { req: true }),
+    field('وين وصل المبلغ', accountSel(facilityId), { req: true }),
     field('تاريخ الدفعة', dateInp('op_date')),
     field('ملاحظات', area('notes')),
   ];
@@ -47,7 +47,7 @@ function payModal({ title, url, facilityId, remaining, payTypes, onDone }) {
 function cancelRefModal({ title, url, facilityId, paid, onDone }) {
   const net = paid;
   const partialBox = h('div', { class: 'hide' }, field('المبلغ المخصوم (يبقى للمنشأة)', moneyInp('kept_amount', { value: 0 }), { hint: 'والباقي يُرجع للزبون' }));
-  const refundBox = h('div', { class: 'hide' }, field('الحساب الذي يخرج منه المبلغ المرتجع', accountSel(facilityId, 'refund_account_id')), field('تاريخ الإرجاع', dateInp('refund_date')));
+  const refundBox = h('div', { class: 'hide' }, field('من وين يطلع المبلغ المرتجع', accountSel(facilityId, 'refund_account_id')), field('تاريخ الإرجاع', dateInp('refund_date')));
   const update = (v) => {
     partialBox.classList.toggle('hide', v !== 'partial');
     refundBox.classList.toggle('hide', v === 'keep' || !v);
@@ -80,7 +80,7 @@ function moneyModal(kind, facilityId, onDone) {
     isAdmin() && S.meta.facilities.length > 1 ? h('p', { class: 'hint' }, `المنشأة: ${f.name}`) : '',
     field('المبلغ', moneyInp('amount', { required: true }), { req: true }),
     field(isExp ? 'تصنيف المصروف' : 'نوع العملية', sel('category', cats), { req: true }),
-    field(isExp ? 'الحساب الذي خرج منه المبلغ' : 'الحساب الذي استقبل المبلغ', accountSel(facilityId), { req: true }),
+    field(isExp ? 'من وين طلع المبلغ' : 'وين وصل المبلغ', accountSel(facilityId), { req: true }),
     field(isExp ? 'الجهة أو الشخص المستلم' : 'مصدر المبلغ', inp('party', { required: true }), { req: true }),
     field('التاريخ', dateInp('op_date')),
     field('ملاحظات', area('notes')),
@@ -97,7 +97,7 @@ function moneyModal(kind, facilityId, onDone) {
 }
 
 function txnsTable(rows, { onChange, showFacility = false } = {}) {
-  return table(['الرقم', 'التاريخ', ...(showFacility ? ['المنشأة'] : []), 'النوع', 'من / إلى', 'المرجع', 'الحساب', 'داخل', 'خارج', 'الموظف', 'ملاحظات', ''],
+  return table(['الرقم', 'التاريخ', ...(showFacility ? ['المنشأة'] : []), 'النوع', 'من / إلى', 'المرجع', 'وين / من وين', 'داخل', 'خارج', 'الموظف', 'ملاحظات', ''],
     rows.map((t) => [
       noTag(t.no), t.op_date, ...(showFacility ? [t.facility_name] : []),
       txnLabel(t) + (t.category && t.kind !== 'payment' ? ` — ${t.category}` : ''), t.party || '',

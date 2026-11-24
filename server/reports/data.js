@@ -1,6 +1,6 @@
 'use strict';
 const { db } = require('../db');
-const { bad, today, addDays, isDate, daysBetween, LABELS } = require('../util');
+const { bad, today, addDays, isDate, daysBetween, LABELS, methodOf, METHOD_ORDER } = require('../util');
 const L = require('../ledger');
 
 const TXN_SELECT = `SELECT t.*, a.name AS account_name, a.type AS account_type, f.name AS facility_name,
@@ -141,6 +141,56 @@ function fundingsAsOf(to, fid = null) {
   return rows;
 }
 
+// تفاصيل الحجز/الطلب المرتبط بكل دفعة: تاريخ الحجز، تاريخ الفرح/اللعب، الخدمة
+function enrich(rows) {
+  const cache = new Map();
+  const get = (t) => {
+    const k = `${t.ref_type}:${t.ref_id}`;
+    if (cache.has(k)) return cache.get(k);
+    let info = null;
+    if (t.ref_type === 'hall') {
+      const b = db.prepare('SELECT reg_date, event_date, period FROM hall_bookings WHERE id=?').get(t.ref_id);
+      if (b) info = { booking_date: b.reg_date, event: `${b.event_date} (${LABELS.period[b.period]})` };
+    } else if (t.ref_type === 'field') {
+      const b = db.prepare('SELECT reg_date, play_date, start_time, end_time FROM field_bookings WHERE id=?').get(t.ref_id);
+      if (b) info = { booking_date: b.reg_date, event: `${b.play_date} ${b.start_time}-${b.end_time}` };
+    } else if (t.ref_type === 'order') {
+      const o = db.prepare('SELECT order_date, service_name FROM orders WHERE id=?').get(t.ref_id);
+      if (o) info = { booking_date: o.order_date, event: o.service_name };
+    }
+    cache.set(k, info);
+    return info;
+  };
+  for (const t of rows) {
+    const i = t.ref_type ? get(t) : null;
+    t.booking_date = i ? i.booking_date : null;
+    t.event = i ? i.event : null;
+    t.method = LABELS.method[methodOf(t.account_type)];
+  }
+  return rows;
+}
+
+// تقسيم الأرقام حسب طريقة وصول المال (كاش / بال باي / جوال باي ...)
+function byMethod(accounts, rows) {
+  const m = new Map();
+  for (const a of accounts) {
+    const k = methodOf(a.type);
+    const x = m.get(k) || { method: k, label: LABELS.method[k], opening: 0, tin: 0, tout: 0, closing: 0, accounts: 0 };
+    x.opening += a.opening;
+    x.closing += a.closing;
+    x.accounts += 1;
+    m.set(k, x);
+  }
+  for (const t of rows) {
+    if (t.status !== 'active') continue;
+    const x = m.get(methodOf(t.account_type));
+    if (!x) continue;
+    if (t.direction === 'in') x.tin += t.amount; else x.tout += t.amount;
+  }
+  return METHOD_ORDER.filter((k) => m.has(k)).map((k) => m.get(k))
+    .filter((x) => ['cash', 'palpay', 'jawwalpay'].includes(x.method) || x.tin || x.tout || x.closing);
+}
+
 function facilityPeriod(f, from, to) {
   const accounts = db.prepare('SELECT * FROM accounts WHERE facility_id=? ORDER BY id').all(f.id);
   for (const a of accounts) {
@@ -148,7 +198,11 @@ function facilityPeriod(f, from, to) {
     a.closing = L.accountBalance(a.id, to);
     a.type_label = LABELS.accountType[a.type] || a.type;
   }
-  const all = db.prepare(`${TXN_SELECT} WHERE t.facility_id=? AND t.op_date>=? AND t.op_date<=? ORDER BY t.op_date, t.id`).all(f.id, from, to);
+  const all = enrich(db.prepare(`${TXN_SELECT} WHERE t.facility_id=? AND t.op_date>=? AND t.op_date<=? ORDER BY t.op_date, t.id`).all(f.id, from, to));
+  for (const a of accounts) {
+    a.tin = all.filter((t) => t.status === 'active' && t.account_id === a.id && t.direction === 'in').reduce((x, t) => x + t.amount, 0);
+    a.tout = all.filter((t) => t.status === 'active' && t.account_id === a.id && t.direction === 'out').reduce((x, t) => x + t.amount, 0);
+  }
   const active = all.filter((t) => t.status === 'active');
   const out = {
     facility: f,
@@ -163,6 +217,7 @@ function facilityPeriod(f, from, to) {
     in_by_account: groupSum(active.filter((t) => t.direction === 'in'), 'account_name'),
     out_by_account: groupSum(active.filter((t) => t.direction === 'out'), 'account_name'),
     by_user: groupSum(active, 'user_name'),
+    by_method: byMethod(accounts, all),
   };
   const pt = (types) => active.filter((t) => t.kind === 'payment' && types.includes(t.pay_type)).reduce((s, t) => s + t.amount, 0);
 
@@ -236,8 +291,9 @@ function quickTotals(from, to) {
 function buildPeriodReport(q = {}) {
   const period = resolvePeriod(q);
   const { from, to } = period;
-  const facs = db.prepare('SELECT * FROM facilities WHERE active=1 ORDER BY sort').all()
-    .filter((f) => !q.facility_id || f.id === Number(q.facility_id));
+  const facs = q.facility_id
+    ? db.prepare('SELECT * FROM facilities WHERE id=?').all(Number(q.facility_id))
+    : reportFacilities(from, to);
   const sections = facs.map((f) => facilityPeriod(f, from, to));
 
   const fundings = fundingsAsOf(to, q.facility_id ? Number(q.facility_id) : null);
@@ -293,7 +349,7 @@ function buildPeriodReport(q = {}) {
   }
 
   return {
-    type: 'period', ...period, sections, summary, fundings, days, cumulative,
+    type: 'period', ...period, part: q.part === 'summary' ? 'summary' : '', sections, summary, fundings, days, cumulative,
     generated_at: new Date().toISOString(), today: today(),
     days_to_year_end: daysBetween(today(), `${today().slice(0, 4)}-12-31`),
   };
@@ -330,9 +386,9 @@ function buildStatement(q = {}) {
     a.type_label = LABELS.accountType[a.type] || a.type;
   }
   const ids = accounts.map((a) => a.id);
-  const rows = ids.length ? db.prepare(`${TXN_SELECT} WHERE t.account_id IN (${ids.map(() => '?').join(',')})
+  const rows = ids.length ? enrich(db.prepare(`${TXN_SELECT} WHERE t.account_id IN (${ids.map(() => '?').join(',')})
       AND t.op_date>=? AND t.op_date<=? ${q.user_id ? 'AND t.user_id=?' : ''} ORDER BY t.op_date, t.id`)
-    .all(...ids, from, to, ...(q.user_id ? [Number(q.user_id)] : [])) : [];
+    .all(...ids, from, to, ...(q.user_id ? [Number(q.user_id)] : []))) : [];
   const opening = accounts.reduce((s, a) => s + a.opening, 0);
   let run = opening;
   for (const t of rows) {
@@ -359,7 +415,8 @@ function buildStatement(q = {}) {
   const liabilities = fundingExternal + (q.facility_id || q.account_id ? fundingInternal : 0);
   return {
     type: 'statement', ...period, title: `كشف حساب شامل — ${scopeTitle}`, scope_title: scopeTitle, user_filter: userName,
-    accounts, rows, opening, totals, closing,
+    accounts, rows, opening, totals, closing, by_method: byMethod(accounts, rows),
+    facility: q.facility_id ? L.getFacility(Number(q.facility_id)) : null,
     expense_by_category: groupSum(rows.filter((t) => t.kind === 'expense'), 'category'),
     by_user: groupSum(rows, 'user_name'),
     debts, receivables, fundings, funding_external: fundingExternal, funding_internal: fundingInternal, liabilities,
@@ -369,4 +426,14 @@ function buildStatement(q = {}) {
   };
 }
 
-module.exports = { resolvePeriod, buildPeriodReport, buildStatement, firstDate };
+// المنشآت التي يصدر لها كشف مستقل (الحسابات العامة فقط إن كان عليها حركة أو رصيد)
+function reportFacilities(from, to) {
+  return db.prepare('SELECT * FROM facilities WHERE active=1 ORDER BY sort').all().filter((f) => {
+    if (f.kind !== 'general') return true;
+    const moved = db.prepare("SELECT COUNT(*) c FROM txns WHERE facility_id=? AND op_date>=? AND op_date<=?").get(f.id, from, to).c;
+    const bal = db.prepare('SELECT id FROM accounts WHERE facility_id=?').all(f.id).reduce((x, a) => x + L.accountBalance(a.id, to), 0);
+    return moved > 0 || bal !== 0;
+  });
+}
+
+module.exports = { resolvePeriod, buildPeriodReport, buildStatement, firstDate, reportFacilities };
