@@ -40,7 +40,7 @@ function reportActions(form, kind, preview) {
     h('p', { class: 'hint' }, items.length > 1 ? 'كل كشف ملف مستقل:' : ''),
     ...items.map((it) => h('div', { class: 'row', style: { borderBottom: '1px solid var(--line)', padding: '8px 0' } },
       h('span', { class: 'sp' }, '📄 ', it.title),
-      sent ? (it.sent && it.sent.ok ? badge('sent', 'أُرسل') : h('span', { class: 'c-out hint' }, `فشل: ${it.sent?.error || ''}`)) : '',
+      sent ? (it.sent && it.sent.ok ? badge('sent', `وصل إلى: ${(it.sent.sent_to || []).join('، ') || 'الجميع'}`) : h('span', { class: 'c-out hint' }, `فشل: ${it.sent?.error || ''}`)) : '',
       h('a', { class: 'btn sm sec', href: `/api/reports/${it.id}/pdf`, target: '_blank' }, 'فتح'),
       h('a', { class: 'btn sm ghost', href: `/api/reports/${it.id}/pdf?dl=1` }, 'تنزيل'))),
   ]);
@@ -65,7 +65,7 @@ async function reportHistory() {
     rows.map((r) => [
       h('span', null, r.title, r.auto ? badge('gray', ' تلقائي') : '', r.stale ? h('span', { class: 'badge b-partial' }, 'تغيّرت بياناته') : ''),
       `${r.period_from || ''} — ${r.period_to || ''}`, dt(r.created_at), r.user_name || 'النظام',
-      h('span', { title: r.telegram_error || '' }, tgBadge(r), r.telegram_error ? h('div', { class: 'hint c-out' }, r.telegram_error.slice(0, 80)) : ''),
+      h('span', { title: r.telegram_error || '' }, tgBadge(r), r.telegram_error ? h('div', { class: 'hint c-out' }, r.telegram_error.slice(0, 120)) : ''),
       h('div', { class: 'row' },
         r.file_name ? h('a', { class: 'btn sm sec', href: `/api/reports/${r.id}/pdf`, target: '_blank' }, 'فتح') : '',
         isAdmin() && r.file_name ? h('button', { class: 'btn sm in', onclick: async (e) => {
@@ -86,10 +86,10 @@ route(/^\/reports$/, async () => {
   const facs = S.meta.facilities;
   const form = h('form', { class: 'card', onsubmit: (e) => e.preventDefault() },
     h('div', { class: 'grid g3' }, periodPicker(),
-      isAdmin() ? field('المنشأة', sel('facility_id', [['', 'جميع المنشآت'], ...facs.map((f) => [f.id, f.name])])) : ''));
+      seesAll() ? field('المنشأة', sel('facility_id', [['', 'جميع المنشآت'], ...facs.map((f) => [f.id, f.name])])) : ''));
   form.append(reportActions(form, 'period', preview));
   return h('div', null,
-    h('div', { class: 'page-head' }, h('h1', null, '📊 التقارير'), isAdmin() ? h('a', { class: 'btn lg', href: '#/statement' }, '📄 كشف حساب شامل PDF') : ''),
+    h('div', { class: 'page-head' }, h('h1', null, '📊 التقارير'), seesAll() ? h('a', { class: 'btn lg', href: '#/statement' }, '📄 كشف حساب شامل PDF') : ''),
     h('p', { class: 'hint' }, 'كل منشأة لها كشف مستقل تماماً (الصالة، المغسلة، الملعب) والملخص الإجمالي ملف منفصل. التقرير اليومي يُنشأ تلقائياً بعد منتصف الليل عن اليوم المنتهي (00:00 — 23:59) ويُرسل كل ملف لحاله عبر تيليجرام.'),
     form, preview,
     h('div', { class: 'card mt' }, h('h3', null, 'التقارير السابقة'), await reportHistory()));
@@ -101,13 +101,13 @@ route(/^\/statement$/, async () => {
   const facs = S.meta.facilities;
   const scope = sel('scope', [['all', 'جميع المنشآت'], ['facility', 'منشأة / خزنة معينة'], ['account', 'حساب معين']], pre.account_id ? 'account' : pre.facility_id ? 'facility' : 'all');
   const facF = field('المنشأة', sel('facility_id', facs.map((f) => [f.id, f.name]), pre.facility_id));
-  const accF = field('الحساب', sel('account_id', (isAdmin() ? S.meta.all_accounts : facs.flatMap((f) => f.accounts.map((a) => ({ ...a, facility_name: f.name }))))
+  const accF = field('الحساب', sel('account_id', (seesAll() ? S.meta.all_accounts : facs.flatMap((f) => f.accounts.map((a) => ({ ...a, facility_name: f.name }))))
     .map((a) => [a.id, `${a.name} — ${a.facility_name}`]), pre.account_id));
   const sync = () => { facF.classList.toggle('hide', scope.value !== 'facility'); accF.classList.toggle('hide', scope.value !== 'account'); };
   scope.onchange = sync;
   const form = h('form', { class: 'card', onsubmit: (e) => e.preventDefault() },
     h('div', { class: 'grid g3' }, field('النطاق', scope), facF, accF,
-      isAdmin() ? field('موظف معين', sel('user_id', [['', 'كل الموظفين'], ...S.meta.users.map((u) => [u.id, u.display_name])])) : '',
+      seesAll() ? field('موظف معين', sel('user_id', [['', 'كل الموظفين'], ...S.meta.users.map((u) => [u.id, u.display_name])])) : '',
       periodPicker({ preset: 'all' })));
   sync();
   // نحذف حقول النطاق غير المختارة قبل الإرسال
@@ -123,30 +123,42 @@ route(/^\/statement$/, async () => {
 });
 
 // ---------------- المستخدمون ----------------
+const TG_HINT = 'ليصله التقرير: يرسل الشخص أي رسالة للبوت، ثم من الإعدادات ← تيليجرام اضغط "جلب المحادثات" وانسخ رقمه هنا';
+
 route(/^\/users$/, async () => {
   const rows = await GET('/admin/users');
   const facs = S.meta.facilities.filter((f) => f.kind !== 'general');
-  const edit = (u = null) => {
-    const role = sel('role', [['staff', 'موظف قسم'], ['admin', 'مدير']], u?.role || 'staff');
+  const edit = (u = null, presetRole = null) => {
+    const role = sel('role', [['staff', 'موظف قسم — يسجل عمليات قسمه فقط'], ['admin', 'مدير — صلاحيات كاملة'], ['viewer', 'مشاهد (المالك) — إحصائيات وتقارير فقط بدون أدوات']], u?.role || presetRole || 'staff');
     const fac = field('القسم الذي يدخل إليه', sel('facility_id', facs.map((f) => [f.id, f.name]), u?.facility_id));
-    const sync = () => fac.classList.toggle('hide', role.value === 'admin');
+    const tg = field('رقم تيليجرام لاستلام التقارير', inp('telegram_chat_id', { dir: 'ltr', value: u?.telegram_chat_id || '', placeholder: 'مثال: 123456789' }), { hint: TG_HINT });
+    const sync = () => { fac.classList.toggle('hide', role.value !== 'staff'); tg.classList.toggle('hide', role.value === 'staff'); };
     role.onchange = sync;
     sync();
     modal(u ? `تعديل المستخدم: ${u.display_name}` : 'إضافة مستخدم', [
-      field('اسم الموظف (يظهر في كل العمليات)', inp('display_name', { required: true, value: u?.display_name }), { req: true }),
-      field('اسم المستخدم للدخول', inp('username', { required: true, value: u?.username, dir: 'ltr' }), { req: true }),
+      field('الاسم (يظهر في كل العمليات)', inp('display_name', { required: true, value: u?.display_name }), { req: true }),
+      field('اسم المستخدم للدخول', inp('username', { required: true, value: u?.username, dir: 'ltr' }), { req: true, hint: 'أحرف إنجليزية وأرقام' }),
       field(u ? 'كلمة مرور جديدة (اتركها فارغة لعدم التغيير)' : 'كلمة المرور', inp('password', { type: 'password', dir: 'ltr', required: !u, minlength: 6 }), { req: !u }),
-      field('الصلاحية', role), fac,
+      field('نوع الحساب', role), fac, tg,
       h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'active', checked: u ? !!u.active : true }), 'الحساب فعّال'),
     ], async (d, idem) => {
       if (u) await api('PUT', `/admin/users/${u.id}`, d, { idem }); else await api('POST', '/admin/users', d, { idem });
       closeModal(); await refreshMeta(); toast('تم الحفظ', 'ok'); reload();
     });
   };
+  const hasViewer = rows.some((u) => u.role === 'viewer');
   return h('div', null,
-    h('div', { class: 'page-head' }, h('h1', null, '👥 المستخدمون'), h('button', { class: 'btn', onclick: () => edit() }, '+ إضافة مستخدم')),
-    h('div', { class: 'card' }, table(['الموظف', 'اسم المستخدم', 'الصلاحية', 'القسم', 'الحالة', 'آخر نشاط', ''],
-      rows.map((u) => [u.display_name, h('span', { dir: 'ltr' }, u.username), u.role === 'admin' ? 'مدير' : 'موظف', u.facility_name || 'الكل',
+    h('div', { class: 'page-head' }, h('h1', null, '👥 المستخدمون'),
+      h('div', { class: 'actions' },
+        !hasViewer ? h('button', { class: 'btn sec', onclick: () => edit(null, 'viewer') }, '+ حساب مشاهدة للمالك') : '',
+        h('button', { class: 'btn', onclick: () => edit() }, '+ إضافة مستخدم'))),
+    h('div', { class: 'grid g3', style: { marginBottom: '16px' } },
+      h('div', { class: 'card tight' }, h('b', null, 'مدير'), h('p', { class: 'hint' }, 'كل شيء: كل الأقسام، الإلغاء، الحسابات، المستخدمون، الإعدادات، إرسال التقارير.')),
+      h('div', { class: 'card tight' }, h('b', null, 'موظف قسم'), h('p', { class: 'hint' }, 'يسجل حجوزات وطلبات ودفعات ومصروفات وديون قسمه فقط. الإلغاء للمدير إلا إذا سُمح له من الإعدادات.')),
+      h('div', { class: 'card tight' }, h('b', null, 'مشاهد (المالك)'), h('p', { class: 'hint' }, 'يرى الإحصائيات والخزن والديون والتقارير وكشوفات الحساب لكل المنشآت، بدون أي تسجيل أو تعديل. تصله التقارير على تيليجرام مع المدير.'))),
+    h('div', { class: 'card' }, table(['الاسم', 'اسم المستخدم', 'نوع الحساب', 'القسم', 'تيليجرام', 'الحالة', 'آخر نشاط', ''],
+      rows.map((u) => [u.display_name, h('span', { dir: 'ltr' }, u.username), ROLE_NAMES[u.role], u.role === 'staff' ? u.facility_name : 'الكل',
+        u.role === 'staff' ? '—' : (u.telegram_chat_id ? badge('sent', 'تصله التقارير') : badge('none', 'بدون رقم')),
         u.active ? badge('active', 'فعّال') : badge('cancelled', 'معطل'), dt(u.last_activity),
         h('div', { class: 'row' }, h('button', { class: 'btn sm sec', onclick: () => edit(u) }, 'تعديل'),
           h('a', { class: 'btn sm ghost', href: `#/audit?user_id=${u.id}` }, 'سجل نشاطه'))]))));
@@ -202,14 +214,33 @@ route(/^\/settings$/, async () => {
     form.onsubmit = saveForm(form);
     body = form;
   } else if (tab === 'telegram') {
+    const recips = await GET('/admin/settings/telegram-recipients');
+    const chatsBox = h('div');
     const form = h('form', { class: 'card' },
-      h('h3', null, 'ربط بوت تيليجرام'),
-      h('p', { class: 'hint' }, '1) أنشئ بوتاً عبر @BotFather وانسخ التوكن. 2) أضف البوت للمجموعة أو أرسل له رسالة. 3) أدخل رقم المحادثة (chat id).'),
-      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'telegram_enabled', checked: s.telegram_enabled === '1' }), 'تفعيل الإرسال التلقائي'),
-      h('div', { class: 'grid g2' },
-        field('توكن البوت', inp('telegram_token', { dir: 'ltr', placeholder: s.telegram_token_set ? '•••••• (محفوظ — اتركه فارغاً لعدم التغيير)' : '123456:ABC…', autocomplete: 'off' })),
-        field('رقم المحادثة المستقبلة (chat id)', inp('telegram_chat_id', { dir: 'ltr', value: s.telegram_chat_id }))),
-      h('h3', { class: 'mt' }, 'مواعيد التقارير التلقائية'),
+      h('h3', null, '1) البوت'),
+      h('p', { class: 'hint' }, 'أنشئ بوتاً من @BotFather على تيليجرام وانسخ التوكن هنا.'),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'telegram_enabled', checked: s.telegram_enabled === '1' }), 'تفعيل الإرسال التلقائي للتقارير'),
+      field('توكن البوت', inp('telegram_token', { dir: 'ltr', placeholder: s.telegram_token_set ? '•••••• (محفوظ — اتركه فارغاً لعدم التغيير)' : '123456:ABC…', autocomplete: 'off' })),
+      h('h3', { class: 'mt' }, '2) مين تصله التقارير'),
+      h('p', { class: 'hint' }, 'التقارير تصل معاً لكل مدير ومالك أُدخل له رقم تيليجرام في صفحة المستخدمين، ويمكن إضافة مجموعة أيضاً.'),
+      recips.length ? h('div', { class: 'list-acc' }, recips.map((r) => h('div', null, h('span', null, '✈️ ', r.name), h('span', { dir: 'ltr', class: 'hint' }, r.id))))
+        : h('p', { class: 'alert' }, 'لا يوجد مستلمون بعد. أدخل رقم تيليجرام لك وللمالك من صفحة المستخدمين.'),
+      h('div', { class: 'actions mt' }, h('a', { class: 'btn sm sec', href: '#/users' }, 'المستخدمون وأرقام تيليجرام'),
+        h('button', { type: 'button', class: 'btn sm ghost', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try {
+            const chats = await GET('/admin/settings/telegram-chats');
+            chatsBox.innerHTML = '';
+            chatsBox.append(h('div', { class: 'card tight mt', style: { background: '#f7f9fc' } },
+              h('b', null, 'المحادثات اللي راسلت البوت مؤخراً:'),
+              chats.length ? table(['الاسم', 'المعرف', 'النوع', 'رقم المحادثة'], chats.map((c) => [c.name, c.username ? `@${c.username}` : '', c.type === 'private' ? 'شخص' : 'مجموعة', h('b', { dir: 'ltr' }, c.id)]))
+                : h('p', { class: 'hint' }, 'لا توجد رسائل. اطلب من كل شخص يرسل أي رسالة للبوت ثم اضغط مرة ثانية.')));
+          } catch (err) { toast(err.message, 'err'); }
+          e.target.disabled = false;
+        } }, '🔎 جلب المحادثات (لمعرفة الأرقام)')),
+      chatsBox,
+      field('مجموعة إضافية (اختياري)', inp('telegram_chat_id', { dir: 'ltr', value: s.telegram_chat_id }), { hint: 'رقم مجموعة تيليجرام إن أردتم استلام التقارير فيها أيضاً (يبدأ عادة بـ -100)' }),
+      h('h3', { class: 'mt' }, '3) مواعيد التقارير التلقائية'),
       h('div', { class: 'grid g3' },
         field('وقت التقرير اليومي', inp('daily_report_time', { type: 'time', value: s.daily_report_time }), { hint: 'عن اليوم المنتهي — يُنصح 00:05' }),
         field('يوم التقرير الأسبوعي', sel('weekly_report_day', DAY_NAMES.map((d, i) => [i, d]), s.weekly_report_day)),
@@ -217,9 +248,13 @@ route(/^\/settings$/, async () => {
       h('div', { class: 'actions mt' }, h('button', { class: 'btn' }, 'حفظ'),
         h('button', { type: 'button', class: 'btn sec', onclick: async (e) => {
           e.currentTarget.disabled = true;
-          try { await api('POST', '/admin/settings/telegram-test'); toast('تم إرسال رسالة اختبار', 'ok'); } catch (err) { toast(err.message, 'err'); }
+          try {
+            const r = await api('POST', '/admin/settings/telegram-test');
+            if (r.ok.length) toast(`وصلت رسالة الاختبار إلى: ${r.ok.join('، ')}`, 'ok');
+            if (r.failed.length) toast(`فشل: ${r.failed.join(' | ')}`, 'err');
+          } catch (err) { toast(err.message, 'err'); }
           e.target.disabled = false;
-        } }, 'إرسال رسالة اختبار')));
+        } }, 'إرسال رسالة اختبار للجميع')));
     form.onsubmit = saveForm(form);
     body = form;
   } else if (tab === 'facilities') {

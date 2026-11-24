@@ -10,7 +10,7 @@ const r = express.Router();
 
 // ---------- المستخدمون ----------
 r.get('/users', (req, res) => {
-  res.json(db.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.facility_id, u.active, u.created_at, f.name AS facility_name,
+  res.json(db.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.facility_id, u.telegram_chat_id, u.active, u.created_at, f.name AS facility_name,
       (SELECT MAX(created_at) FROM audit a WHERE a.user_id=u.id) AS last_activity
     FROM users u LEFT JOIN facilities f ON f.id=u.facility_id ORDER BY u.id`).all());
 });
@@ -19,13 +19,15 @@ function validateUser(B, isNew) {
   const d = {
     username: str(B.username, 'اسم المستخدم', { required: true, max: 50 }),
     display_name: str(B.display_name, 'اسم الموظف', { required: true, max: 100 }),
-    role: B.role === 'admin' ? 'admin' : 'staff',
+    role: ['admin', 'viewer'].includes(B.role) ? B.role : 'staff',
     facility_id: B.facility_id ? Number(B.facility_id) : null,
+    telegram_chat_id: str(B.telegram_chat_id, 'رقم تيليجرام', { max: 40 }),
     active: B.active === undefined ? 1 : (B.active ? 1 : 0),
   };
   if (!/^[\w.\-]+$/.test(d.username)) throw bad('اسم المستخدم: أحرف إنجليزية وأرقام فقط');
   if (d.role === 'staff' && !d.facility_id) throw bad('حدد القسم الذي يدخل إليه الموظف');
-  if (d.role === 'admin') d.facility_id = null;
+  if (d.role !== 'staff') d.facility_id = null;
+  if (d.telegram_chat_id && !/^-?\d+$/.test(d.telegram_chat_id)) throw bad('رقم تيليجرام يجب أن يكون أرقاماً فقط');
   if (d.facility_id && !db.prepare('SELECT id FROM facilities WHERE id=?').get(d.facility_id)) throw bad('القسم غير موجود');
   if (isNew || B.password) {
     if (String(B.password || '').length < 6) throw bad('كلمة المرور 6 أحرف على الأقل');
@@ -36,8 +38,8 @@ function validateUser(B, isNew) {
 r.post('/users', (req, res) => {
   const d = validateUser(req.body || {}, true);
   if (db.prepare('SELECT id FROM users WHERE username=?').get(d.username)) throw bad('اسم المستخدم مستخدم مسبقاً');
-  const info = db.prepare(`INSERT INTO users (username, display_name, password_hash, role, facility_id, active, must_change_password, created_at)
-    VALUES (?,?,?,?,?,?,1,?)`).run(d.username, d.display_name, bcrypt.hashSync(req.body.password, 10), d.role, d.facility_id, d.active, nowISO());
+  const info = db.prepare(`INSERT INTO users (username, display_name, password_hash, role, facility_id, telegram_chat_id, active, must_change_password, created_at)
+    VALUES (?,?,?,?,?,?,?,1,?)`).run(d.username, d.display_name, bcrypt.hashSync(req.body.password, 10), d.role, d.facility_id, d.telegram_chat_id, d.active, nowISO());
   audit(req.user, 'create', 'user', info.lastInsertRowid, { summary: `إضافة مستخدم: ${d.display_name} (${d.username})` });
   res.json({ id: info.lastInsertRowid });
 });
@@ -48,8 +50,8 @@ r.put('/users/:id', (req, res) => {
   const d = validateUser({ ...u, ...req.body }, false);
   if (u.id === req.user.id && (d.role !== 'admin' || !d.active)) throw bad('لا يمكنك تعطيل حسابك أو إزالة صلاحية المدير عنه');
   if (db.prepare('SELECT id FROM users WHERE username=? AND id<>?').get(d.username, u.id)) throw bad('اسم المستخدم مستخدم مسبقاً');
-  db.prepare('UPDATE users SET username=?, display_name=?, role=?, facility_id=?, active=? WHERE id=?')
-    .run(d.username, d.display_name, d.role, d.facility_id, d.active, u.id);
+  db.prepare('UPDATE users SET username=?, display_name=?, role=?, facility_id=?, telegram_chat_id=?, active=? WHERE id=?')
+    .run(d.username, d.display_name, d.role, d.facility_id, d.telegram_chat_id, d.active, u.id);
   if (req.body.password) {
     db.prepare('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?').run(bcrypt.hashSync(req.body.password, 10), u.id);
   }
@@ -120,11 +122,23 @@ r.put('/settings', (req, res) => {
 });
 
 r.post('/settings/telegram-test', async (req, res) => {
+  let out;
   try {
-    await telegram.sendText('✅ تم ربط نظام إدارة الصالة والمغسلة والملعب بنجاح');
-    res.json({ ok: true });
+    out = await telegram.sendText('✅ تم ربط نظام إدارة الصالة والمغسلة والملعب. ستصلك التقارير هنا.');
   } catch (e) {
     throw bad(`فشل الاختبار: ${e.message}`);
+  }
+  res.json({ ok: out.ok.map((x) => x.name), failed: out.failed.map((x) => `${x.name}: ${x.error}`) });
+});
+
+r.get('/settings/telegram-recipients', (req, res) => res.json(telegram.recipients()));
+
+// المحادثات التي راسلت البوت — لمعرفة رقم المدير والمالك
+r.get('/settings/telegram-chats', async (req, res) => {
+  try {
+    res.json(await telegram.recentChats());
+  } catch (e) {
+    throw bad(e.message);
   }
 });
 

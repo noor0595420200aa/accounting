@@ -44,8 +44,8 @@ route(/^\/treasury$/, async () => {
   const total = list.reduce((s, t) => s + t.current, 0);
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, '💰 الخزن والحسابات'),
-      isAdmin() ? h('div', { class: 'actions' },
-        h('button', { class: 'btn', onclick: () => accountModal() }, '+ إضافة حساب / مكان حفظ'),
+      seesAll() ? h('div', { class: 'actions' },
+        isAdmin() ? h('button', { class: 'btn', onclick: () => accountModal() }, '+ إضافة حساب / مكان حفظ') : '',
         h('a', { class: 'btn sec', href: '#/fundings' }, 'الديون علينا'),
         h('a', { class: 'btn sec', href: '#/statement' }, 'كشف حساب شامل PDF')) : ''),
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } }, kpi('إجمالي أرصدة كل الخزن', money(total))),
@@ -90,8 +90,8 @@ route(/^\/treasury\/(\d+)$/, async (fid) => {
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, `خزنة ${f.name}`),
       h('div', { class: 'actions' },
-        h('button', { class: 'btn in', onclick: () => moneyModal('income', f.id) }, '+ إيداع'),
-        h('button', { class: 'btn out', onclick: () => moneyModal('expense', f.id) }, '+ مصروف'),
+        canWrite() ? h('button', { class: 'btn in', onclick: () => moneyModal('income', f.id) }, '+ إيداع') : '',
+        canWrite() ? h('button', { class: 'btn out', onclick: () => moneyModal('expense', f.id) }, '+ مصروف') : '',
         h('a', { class: 'btn sec', href: `#/statement?facility_id=${f.id}` }, 'كشف الخزنة PDF'))),
     h('div', { class: 'card tight' }, h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); go(`#/treasury/${fid}${qs({ from: from.value, to: to.value })}`); } },
       field('من', from), field('إلى', to), h('button', { class: 'btn' }, 'عرض'), h('a', { class: 'btn ghost', href: `#/treasury/${fid}` }, 'كل الفترات'))),
@@ -120,7 +120,7 @@ route(/^\/account\/(\d+)$/, async (id) => {
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, `📍 ${a.name}`), h('div', { class: 'hint' }, `${a.facility_name} · ${S.L.accountType[a.type]}${a.phone ? ` · ${a.phone}` : ''}`)),
       h('div', { class: 'actions' },
         isAdmin() ? h('button', { class: 'btn sec', onclick: () => accountModal(a) }, 'تعديل') : '',
-        isAdmin() ? h('a', { class: 'btn', href: `#/statement?account_id=${a.id}` }, 'كشف الحساب PDF') : '')),
+        seesAll() ? h('a', { class: 'btn', href: `#/statement?account_id=${a.id}` }, 'كشف الحساب PDF') : '')),
     a.notes ? h('div', { class: 'card tight' }, a.notes) : '',
     h('div', { class: 'card tight' }, h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); go(`#/account/${id}${qs({ from: from.value, to: to.value })}`); } },
       field('من', from), field('إلى', to), h('button', { class: 'btn' }, 'عرض'))),
@@ -185,8 +185,8 @@ function debtsOwedList(rows) {
     const pays = f.txns.filter((t) => t.kind === 'funding_repay');
     return h('div', { class: 'card tight', style: { border: '1px solid var(--line)', boxShadow: 'none', opacity: f.status === 'cancelled' ? 0.6 : 1 } },
       h('div', { class: 'row' }, noTag(f.no), h('b', null, `دين على ${f.facility_name} لصالح ${f.party}`), badge(cls, label), h('span', { class: 'sp' }),
-        isAdmin() && f.status === 'active' && f.outstanding > 0 ? h('button', { class: 'btn sm in', onclick: () => repayDebtModal(f) }, 'سداد') : '',
-        isAdmin() && f.status === 'active' ? h('button', { class: 'btn sm danger', onclick: () => modal(`إلغاء الدين ${f.no}`, [
+        canWrite() && f.status === 'active' && f.outstanding > 0 ? h('button', { class: 'btn sm in', onclick: () => repayDebtModal(f) }, 'سداد') : '',
+        canCancel() && f.status === 'active' ? h('button', { class: 'btn sm danger', onclick: () => modal(`إلغاء الدين ${f.no}`, [
           h('p', { class: 'hint' }, 'للتصحيح فقط (دين مسجل بالغلط). يتم إلغاء الدين وكل حركاته مع الاحتفاظ بالسجل.'), field('سبب الإلغاء', area('reason'), { req: true })],
         async (d, idem) => { await api('POST', `/fundings/${f.id}/cancel`, d, { idem }); closeModal(); reload(); }, { submitText: 'تأكيد الإلغاء', submitClass: 'out' }) }, 'إلغاء') : ''),
       h('div', { class: 'grid g4 mt' },
@@ -208,7 +208,7 @@ route(/^\/fundings$/, async () => {
   const live = rows.filter((f) => f.status === 'active');
   const open = live.filter((f) => f.outstanding > 0);
   return h('div', null,
-    h('div', { class: 'page-head' }, h('h1', null, 'الديون علينا'), isAdmin() ? h('button', { class: 'btn', onclick: () => addDebtModal() }, '+ تسجيل دين على منشأة') : ''),
+    h('div', { class: 'page-head' }, h('h1', null, 'الديون علينا'), canWrite() ? h('button', { class: 'btn', onclick: () => addDebtModal() }, '+ تسجيل دين على منشأة') : ''),
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } },
       kpi('ديون علينا لم تُسدد', money(open.reduce((x, f) => x + f.outstanding, 0)), 'out'),
       kpi('عدد الديون القائمة', open.length, 'plain'),

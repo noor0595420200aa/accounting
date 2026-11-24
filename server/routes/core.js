@@ -3,7 +3,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db } = require('../db');
 const { bad, HttpError, today, getSetting, audit, LABELS, daysBetween, str } = require('../util');
-const { isAdmin } = require('../auth');
+const { isAdmin, seesAll } = require('../auth');
 const L = require('../ledger');
 
 const r = express.Router();
@@ -33,7 +33,7 @@ r.post('/me/password', (req, res) => {
 
 // بيانات مرجعية: المنشآت والحسابات والتصنيفات
 r.get('/meta', (req, res) => {
-  const admin = isAdmin(req.user);
+  const admin = seesAll(req.user);
   const facs = db.prepare('SELECT * FROM facilities WHERE active=1 ORDER BY sort').all()
     .filter((f) => admin || f.id === req.user.facility_id);
   for (const f of facs) {
@@ -62,7 +62,7 @@ function sumWhere(where, args) {
 }
 
 r.get('/dashboard', (req, res) => {
-  const admin = isAdmin(req.user);
+  const admin = seesAll(req.user);
   const fid = admin ? null : req.user.facility_id;
   const t = today();
   const year = t.slice(0, 4);
@@ -104,7 +104,7 @@ r.get('/dashboard', (req, res) => {
     ${fid ? 'WHERE t.facility_id=?' : ''} ORDER BY t.id DESC LIMIT 12`).all(...fA);
   const recentAudit = admin ? db.prepare(`SELECT a.*, u.display_name AS user_name FROM audit a LEFT JOIN users u ON u.id=a.user_id
     WHERE a.action<>'login' ORDER BY a.id DESC LIMIT 12`).all() : [];
-  const alerts = admin ? db.prepare('SELECT * FROM alerts WHERE resolved=0 ORDER BY id DESC LIMIT 20').all() : [];
+  const alerts = isAdmin(req.user) ? db.prepare('SELECT * FROM alerts WHERE resolved=0 ORDER BY id DESC LIMIT 20').all() : [];
 
   const todayEvents = {
     hall: (!fid || facilities[0]?.kind === 'hall') ? db.prepare(`SELECT id, no, customer_name, period, status FROM hall_bookings
@@ -143,7 +143,7 @@ r.get('/lookup', (req, res) => {
   for (const [type, tbl] of tries) {
     const row = db.prepare(`SELECT id, facility_id FROM ${tbl} WHERE UPPER(no)=?`).get(q);
     if (row) {
-      if (!isAdmin(req.user) && row.facility_id !== req.user.facility_id) throw new HttpError(403, 'العملية تابعة لقسم آخر');
+      if (!seesAll(req.user) && row.facility_id !== req.user.facility_id) throw new HttpError(403, 'العملية تابعة لقسم آخر');
       return res.json({ type, id: row.id });
     }
   }

@@ -44,6 +44,11 @@ const badge = (cls, text) => h('span', { class: `badge b-${cls}` }, text);
 const bStatus = (s) => badge(s, S.L.bookingStatus[s] || s);
 const oStatus = (s) => badge(s, S.L.orderStatus[s] || s);
 const isAdmin = () => S.me && S.me.user.role === 'admin';
+// المشاهد (المالك): يرى كل شيء من إحصائيات وتقارير بدون أي أداة تعديل
+const isViewer = () => S.me && S.me.user.role === 'viewer';
+const seesAll = () => isAdmin() || isViewer();
+const canWrite = () => !isViewer();
+const ROLE_NAMES = { admin: 'مدير', staff: 'موظف', viewer: 'مشاهد (المالك)' };
 const today = () => S.me.today;
 function addDays(s, n) {
   const d = new Date(s + 'T00:00:00Z');
@@ -188,6 +193,9 @@ const go = (hash) => { location.hash = hash; };
 
 function menuItems() {
   const m = [['#/', '🏠', 'الرئيسية']];
+  if (isViewer()) {
+    return [...m, ['#/treasury', '💰', 'الخزن والحسابات'], ['#/debts', '📒', 'الديون'], ['#/reports', '📊', 'التقارير'], ['#/statement', '📄', 'كشف حساب']];
+  }
   const facs = S.meta.facilities;
   const has = (k) => facs.some((f) => f.kind === k);
   if (has('hall')) m.push(['#/hall', '💍', 'الصالة']);
@@ -221,7 +229,7 @@ function layout(content) {
   const top = h('div', { class: 'topbar' },
     h('button', { class: 'btn sm ghost menu-btn', onclick: () => side.classList.toggle('open') }, '☰'),
     search,
-    h('div', { class: 'who' }, '👤 ', h('span', { class: 'nm' }, S.me.user.display_name)));
+    h('div', { class: 'who' }, '👤 ', h('span', { class: 'nm' }, S.me.user.display_name, h('span', { class: 'hint' }, ` · ${ROLE_NAMES[S.me.user.role]}`))));
   return h('div', { class: 'shell' }, side, h('div', { class: 'main' }, top, h('div', { class: 'content' }, content)));
 }
 
@@ -242,6 +250,8 @@ async function render() {
   const app = $('#app');
   if (!S.me) return;
   if (S.me.user.must_change_password && path !== '/password') return go('#/password');
+  // المشاهد يدخل صفحات الإحصائيات والتقارير فقط
+  if (isViewer() && !/^\/($|treasury|account\/|debts$|fundings$|reports$|statement$|txn\/|password$)/.test(path)) return go('#/');
   for (const [re, fn] of routes) {
     const m = path.match(re);
     if (m) {

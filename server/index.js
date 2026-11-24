@@ -46,6 +46,14 @@ api.use((req, res, next) => {
   }
   next();
 });
+// حساب المشاهدة (المالك): قراءة فقط + إنشاء ملفات التقارير
+const VIEWER_POSTS = ['/me/password', '/reports/generate'];
+api.use((req, res, next) => {
+  if (req.user.role === 'viewer' && req.method !== 'GET' && !VIEWER_POSTS.includes(req.path)) {
+    return next(new HttpError(403, 'حساب المشاهدة للاطلاع على الإحصائيات والتقارير فقط'));
+  }
+  next();
+});
 api.use(idempotency);
 api.use('/', require('./routes/core').router);
 api.use('/hall', require('./routes/hall').router);

@@ -97,26 +97,39 @@ function caption(r, data) {
   return c;
 }
 
-/** إرسال تقرير محفوظ عبر تيليجرام، مع تسجيل الخطأ وتنبيه المدير عند الفشل */
-async function sendReport(id, user = null, data = null) {
+/**
+ * إرسال تقرير محفوظ عبر تيليجرام لكل المستلمين (المدير + المالك + المجموعة).
+ * force=false: يرسل فقط لمن لم يستلمه بعد (إعادة المحاولة التلقائية). force=true: للجميع.
+ */
+async function sendReport(id, user = null, data = null, { force = false } = {}) {
   const r = db.prepare('SELECT * FROM reports WHERE id=?').get(id);
   if (!r) throw new HttpError(404, 'التقرير غير موجود');
   if (!fs.existsSync(filePath(id))) throw new HttpError(404, 'ملف التقرير غير موجود، أعد توليده');
+  const all = telegram.recipients();
+  const already = force ? [] : JSON.parse(r.sent_to || '[]');
+  const target = all.filter((x) => !already.includes(x.id));
+  if (all.length && !target.length) return { ok: true, sent_to: [], already: true };
   db.prepare('UPDATE reports SET attempts=attempts+1, last_attempt_at=? WHERE id=?').run(nowISO(), id);
+  let res;
   try {
     if (!data) {
       try { const p = JSON.parse(r.params); data = build(p.kind, p.params); } catch { data = null; }
     }
-    await telegram.sendDocument(fs.readFileSync(filePath(id)), `${r.title.replace(/[\\/:*?"<>|]/g, '-')}.pdf`, caption(r, data));
-    db.prepare("UPDATE reports SET telegram_status='sent', telegram_error=NULL, sent_at=? WHERE id=?").run(nowISO(), id);
-    if (user) audit(user, 'send', 'report', id, { summary: `إرسال تقرير عبر تيليجرام: ${r.title}` });
-    db.prepare("UPDATE alerts SET resolved=1 WHERE type='telegram_failed' AND ref_id=?").run(id);
-    return { ok: true };
+    res = await telegram.sendDocument(fs.readFileSync(filePath(id)), `${r.title.replace(/[\\/:*?"<>|]/g, '-')}.pdf`, caption(r, data), target);
   } catch (e) {
-    db.prepare("UPDATE reports SET telegram_status='failed', telegram_error=? WHERE id=?").run(String(e.message || e), id);
-    addAlert('telegram_failed', `فشل إرسال التقرير "${r.title}" عبر تيليجرام: ${e.message || e}`, id);
-    throw new HttpError(502, `تعذر الإرسال: ${e.message || e}`);
+    res = { ok: [], failed: [{ name: 'الكل', error: String(e.message || e) }] };
   }
+  const sentTo = [...new Set([...already, ...res.ok.map((x) => x.id)])];
+  if (res.failed.length) {
+    const err = res.failed.map((f) => `${f.name}: ${f.error}`).join(' | ');
+    db.prepare("UPDATE reports SET telegram_status='failed', telegram_error=?, sent_to=? WHERE id=?").run(err, JSON.stringify(sentTo), id);
+    addAlert('telegram_failed', `فشل إرسال "${r.title}" — ${err}${res.ok.length ? ` (وصل إلى: ${res.ok.map((x) => x.name).join('، ')})` : ''}`, id);
+    throw new HttpError(502, `تعذر الإرسال إلى ${err}`);
+  }
+  db.prepare("UPDATE reports SET telegram_status='sent', telegram_error=NULL, sent_at=?, sent_to=? WHERE id=?").run(nowISO(), JSON.stringify(sentTo), id);
+  if (user) audit(user, 'send', 'report', id, { summary: `إرسال "${r.title}" عبر تيليجرام إلى: ${res.ok.map((x) => x.name).join('، ')}` });
+  db.prepare("UPDATE alerts SET resolved=1 WHERE type='telegram_failed' AND ref_id=?").run(id);
+  return { ok: true, sent_to: res.ok.map((x) => x.name) };
 }
 
 async function regenerate(id, user) {

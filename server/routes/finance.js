@@ -2,7 +2,7 @@
 const express = require('express');
 const { db, nowISO } = require('../db');
 const { bad, HttpError, toMinor, str, reqDate, today, nextNo, audit, markStale, LABELS, fmt } = require('../util');
-const { assertFacility, assertCanCancel, isAdmin } = require('../auth');
+const { assertFacility, assertCanCancel, isAdmin, seesAll } = require('../auth');
 const L = require('../ledger');
 
 const r = express.Router();
@@ -13,7 +13,7 @@ const TXN_SELECT = `SELECT t.*, a.name AS account_name, a.type AS account_type, 
   JOIN users u ON u.id=t.user_id LEFT JOIN users cu ON cu.id=t.cancelled_by`;
 
 function scopeFacility(user, requested) {
-  if (isAdmin(user)) return requested ? Number(requested) : null;
+  if (seesAll(user)) return requested ? Number(requested) : null;
   return user.facility_id;
 }
 
@@ -280,9 +280,9 @@ r.get('/fundings', (req, res) => {
 });
 
 r.post('/fundings', (req, res) => {
-  if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const B = req.body || {};
   const fid = Number(B.facility_id);
+  assertFacility(req.user, fid);
   const fac = L.getFacility(fid);
   const amount = toMinor(B.amount, 'المبلغ');
   const opDate = reqDate(B.op_date, 'التاريخ', today());
@@ -313,9 +313,9 @@ r.post('/fundings', (req, res) => {
 });
 
 r.post('/fundings/:id/repay', (req, res) => {
-  if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const f = db.prepare('SELECT * FROM fundings WHERE id=?').get(Number(req.params.id));
   if (!f) throw new HttpError(404, 'غير موجود');
+  assertFacility(req.user, f.facility_id);
   if (f.status === 'cancelled') throw bad('الدين ملغي');
   const amount = toMinor(req.body.amount, 'المبلغ');
   const acc = L.getAccountFor(req.body.account_id, f.facility_id);
@@ -349,9 +349,9 @@ r.post('/fundings/:id/repay', (req, res) => {
 });
 
 r.post('/fundings/:id/cancel', (req, res) => {
-  if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const f = db.prepare('SELECT * FROM fundings WHERE id=?').get(Number(req.params.id));
   if (!f) throw new HttpError(404, 'غير موجود');
+  assertCanCancel(req.user, f.facility_id);
   if (f.status === 'cancelled') throw bad('ملغي مسبقاً');
   const reason = str(req.body.reason, 'سبب الإلغاء', { required: true });
   db.transaction(() => {

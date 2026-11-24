@@ -3,7 +3,7 @@ const express = require('express');
 const fs = require('fs');
 const { db } = require('../db');
 const { HttpError } = require('../util');
-const { isAdmin } = require('../auth');
+const { isAdmin, seesAll } = require('../auth');
 const { build, createReportSet, sendReport, regenerate, filePath } = require('../reports/service');
 const { renderReport } = require('../reports/html');
 const { reportToExcel } = require('../reports/excel');
@@ -16,7 +16,7 @@ function params(req, src) {
   const kind = q.kind === 'statement' ? 'statement' : 'period';
   delete q.kind;
   for (const k of Object.keys(q)) if (q[k] === '' || q[k] == null) delete q[k];
-  if (!isAdmin(req.user)) {
+  if (!seesAll(req.user)) {
     if (kind === 'statement' && (q.account_id || q.user_id)) throw new HttpError(403, 'للمدير فقط');
     q.facility_id = String(req.user.facility_id);
   }
@@ -51,7 +51,7 @@ r.post('/generate', async (req, res) => {
 });
 
 r.get('/', (req, res) => {
-  const rows = isAdmin(req.user)
+  const rows = seesAll(req.user)
     ? db.prepare(`SELECT r.*, u.display_name AS user_name FROM reports r LEFT JOIN users u ON u.id=r.created_by ORDER BY r.id DESC LIMIT 200`).all()
     : db.prepare(`SELECT r.*, u.display_name AS user_name FROM reports r LEFT JOIN users u ON u.id=r.created_by WHERE r.created_by=? ORDER BY r.id DESC LIMIT 100`).all(req.user.id);
   res.json(rows);
@@ -60,7 +60,7 @@ r.get('/', (req, res) => {
 function own(req, id) {
   const rep = db.prepare('SELECT * FROM reports WHERE id=?').get(id);
   if (!rep) throw new HttpError(404, 'التقرير غير موجود');
-  if (!isAdmin(req.user) && rep.created_by !== req.user.id) throw new HttpError(403, 'لا تملك صلاحية');
+  if (!seesAll(req.user) && rep.created_by !== req.user.id) throw new HttpError(403, 'لا تملك صلاحية');
   return rep;
 }
 
@@ -75,14 +75,14 @@ r.get('/:id/pdf', (req, res) => {
 
 r.post('/:id/send', async (req, res) => {
   if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
-  res.json(await sendReport(Number(req.params.id), req.user));
+  res.json(await sendReport(Number(req.params.id), req.user, null, { force: true }));
 });
 
 r.post('/:id/regenerate', async (req, res) => {
   if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const { id } = await regenerate(Number(req.params.id), req.user);
   let sent = null;
-  if (req.body && req.body.send) sent = await sendReport(id, req.user).catch((e) => ({ ok: false, error: e.message }));
+  if (req.body && req.body.send) sent = await sendReport(id, req.user, null, { force: true }).catch((e) => ({ ok: false, error: e.message }));
   res.json({ id, sent });
 });
 

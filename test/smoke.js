@@ -13,11 +13,16 @@ process.env.DISABLE_SCHEDULER = '1';
 // خادم تيليجرام وهمي لاختبار الإرسال
 const tgReceived = [];
 const tg = http.createServer((req, res) => {
-  let size = 0;
-  req.on('data', (c) => { size += c.length; });
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
-    tgReceived.push({ url: req.url, size });
+    const body = Buffer.concat(chunks).toString('latin1');
+    const m = body.match(/name="chat_id"\r\n\r\n(-?\d+)/);
+    const chat = m ? m[1] : null;
+    tgReceived.push({ url: req.url, size: body.length, chat });
     res.setHeader('Content-Type', 'application/json');
+    if (chat === '999') return res.end(JSON.stringify({ ok: false, description: 'Bad Request: chat not found' }));
+    if (req.url.endsWith('/getUpdates')) return res.end(JSON.stringify({ ok: true, result: [{ message: { chat: { id: 222, first_name: 'المالك', type: 'private' } } }] }));
     res.end(JSON.stringify({ ok: true, result: {} }));
   });
 });
@@ -78,7 +83,17 @@ async function fail(who, method, url, body, re) {
   await ok('wash', 'POST', '/me/password', { current: 'pass123', password: 'pass1234' });
   await fail('hall', 'GET', '/laundry/orders', null, /صلاحية/);
   await fail('hall', 'GET', '/admin/users', null, /للمدير/);
-  step('users + facility permissions');
+  // حساب المشاهدة للمالك: يرى كل شيء ولا يعدل شيئاً
+  await ok('admin', 'POST', '/admin/users', { username: 'owner', display_name: 'المالك', password: 'pass123', role: 'viewer', telegram_chat_id: '222' });
+  await ok('owner', 'POST', '/login', { username: 'owner', password: 'pass123' });
+  await ok('owner', 'POST', '/me/password', { current: 'pass123', password: 'pass1234' });
+  const ometa = await ok('owner', 'GET', '/meta');
+  assert.strictEqual(ometa.facilities.length, meta.facilities.length);
+  await fail('owner', 'POST', '/txns/expense', { facility_id: F.hall.id, account_id: acc('hall'), amount: 1, category: 'رواتب', party: 'x' }, /للاطلاع/);
+  await fail('owner', 'POST', '/hall/bookings', { customer_name: 'x', event_date: T, total: 1, deposit: 1, account_id: acc('hall') }, /للاطلاع/);
+  await fail('owner', 'GET', '/admin/users', null, /للمدير/);
+  await ok('admin', 'PUT', '/admin/users/1', { telegram_chat_id: '111' });
+  step('users + facility permissions + owner viewer account (read-only)');
 
   // ---- الصالة: العربون إلزامي، الفترة المسائية تلقائية، منع التعارض ----
   const ev = addDays(T, 30);
@@ -168,6 +183,12 @@ async function fail(who, method, url, body, re) {
   await ok('admin', 'POST', '/accounts', { facility_id: F.hall.id, name: 'أسامة', type: 'employee', phone: '0599000000', opening_balance: 0 });
   const general = meta.facilities.find((f) => f.kind === 'general');
   await ok('admin', 'PUT', `/accounts/${general.accounts[0].id}`, { opening_balance: 10000 });
+  // موظف الصالة يسجل ديناً على قسمه فقط ويسدده، والإلغاء للمدير
+  const sd = await ok('hall', 'POST', '/fundings', { facility_id: F.hall.id, received: 'yes', account_id: acc('hall'), party: 'أبو سمير', amount: 50, reason: 'سلفة لشراء ورد' });
+  await fail('hall', 'POST', '/fundings', { facility_id: F.field.id, party: 'x', amount: 5, reason: 'x' }, /صلاحية/);
+  await ok('hall', 'POST', `/fundings/${sd.id}/repay`, { amount: 50, account_id: acc('hall'), reason: 'رجعناله السلفة' });
+  await fail('hall', 'POST', `/fundings/${sd.id}/cancel`, { reason: 'x' }, /للمدير/);
+  assert.strictEqual((await ok('hall', 'GET', '/fundings')).length, 1);
   // دين على الملعب: استلمنا المبلغ كاش، وسداده يحتاج سبباً
   const fu = await ok('admin', 'POST', '/fundings', { facility_id: F.field.id, received: 'yes', account_id: acc('field'), party: 'أبو علي', amount: 1000, reason: 'صيانة الإنارة' });
   await fail('admin', 'POST', '/fundings', { facility_id: F.field.id, party: 'x', amount: 5 }, /سبب الدين/);
@@ -218,12 +239,31 @@ async function fail(who, method, url, body, re) {
 
   const { findChrome } = require('../server/reports/pdf');
   if (findChrome()) {
-    await ok('admin', 'PUT', '/admin/settings', { telegram_enabled: true, telegram_token: '123:TEST', telegram_chat_id: '-100' });
+    await ok('admin', 'PUT', '/admin/settings', { telegram_enabled: true, telegram_token: '123:TEST', telegram_chat_id: '' });
+    const chats = await ok('admin', 'GET', '/admin/settings/telegram-chats');
+    assert.strictEqual(chats[0].id, '222');
+    const test = await ok('admin', 'POST', '/admin/settings/telegram-test');
+    assert.deepStrictEqual(test.ok, ['المدير', 'المالك']);
     // كشف لكل منشأة لحاله
     const g = await ok('admin', 'POST', '/reports/generate', { kind: 'statement', preset: 'all', send: true });
     assert.ok(g.items.length >= 3, 'separate statement per facility');
     assert.ok(g.items.every((i) => i.sent && i.sent.ok), JSON.stringify(g.items));
-    assert.ok(tgReceived.filter((x) => x.url.includes('/bot123:TEST/sendDocument') && x.size > 10000).length >= 3);
+    assert.deepStrictEqual(g.items[0].sent.sent_to, ['المدير', 'المالك'], 'report reaches manager and owner together');
+    const docs = tgReceived.filter((x) => x.url.endsWith('/sendDocument'));
+    assert.strictEqual(docs.filter((x) => x.chat === '111').length, docs.filter((x) => x.chat === '222').length);
+    // فشل مستلم واحد لا يمنع الباقين، وإعادة المحاولة لا تكرر لمن استلم
+    await ok('admin', 'PUT', '/admin/settings', { telegram_chat_id: '999' });
+    const gf = await ok('admin', 'POST', '/reports/generate', { kind: 'statement', preset: 'all', facility_id: F.hall.id, send: true });
+    assert.strictEqual(gf.items[0].sent.ok, false);
+    await ok('admin', 'PUT', '/admin/settings', { telegram_chat_id: '' });
+    const before = tgReceived.length;
+    const again = await require('../server/reports/service').sendReport(gf.items[0].id);
+    assert.strictEqual(again.already, true);
+    assert.strictEqual(tgReceived.length, before);
+    // المالك يستطيع إنشاء ملف PDF لكن لا يستطيع الإرسال
+    const og = await ok('owner', 'POST', '/reports/generate', { kind: 'period', preset: 'day', facility_id: F.hall.id });
+    assert.strictEqual(og.items.length, 1);
+    await fail('owner', 'POST', '/reports/generate', { kind: 'period', preset: 'day', send: true }, /للاطلاع|للمدير/);
     const gp = await ok('admin', 'POST', '/reports/generate', { kind: 'period', preset: 'day' });
     assert.ok(gp.items.some((i) => i.title.startsWith('الملخص الإجمالي')));
     assert.ok(gp.items.some((i) => i.title.startsWith('صالة الأفراح')));

@@ -7,8 +7,8 @@ const DAY_NAMES = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأر
 function sectionTabs(kind, active) {
   const f = facOf(kind);
   const tabs = kind === 'hall'
-    ? [['#/hall', 'الحجوزات'], ['#/hall/new', '+ حجز جديد'], ['#/hall/calendar', 'التقويم'], [`#/finance/${f.id}`, 'الإيداعات والمصروفات'], [`#/treasury/${f.id}`, 'الخزنة']]
-    : [['#/field', 'الحجوزات'], ['#/field/new', '+ حجز جديد'], ['#/field/schedule', 'الجدول'], [`#/finance/${f.id}`, 'الإيداعات والمصروفات'], [`#/treasury/${f.id}`, 'الخزنة']];
+    ? [['#/hall', 'الحجوزات'], ['#/hall/new', '+ حجز جديد'], ['#/hall/calendar', 'التقويم'], [`#/finance/${f.id}`, 'الإيداعات والمصروفات'], [`#/treasury/${f.id}`, 'الخزنة'], ['#/fundings', 'الديون علينا']]
+    : [['#/field', 'الحجوزات'], ['#/field/new', '+ حجز جديد'], ['#/field/schedule', 'الجدول'], [`#/finance/${f.id}`, 'الإيداعات والمصروفات'], [`#/treasury/${f.id}`, 'الخزنة'], ['#/fundings', 'الديون علينا']];
   return h('div', { class: 'tabs' }, tabs.map(([href, l]) => h('a', { href, class: href === active ? 'on' : '' }, l)));
 }
 

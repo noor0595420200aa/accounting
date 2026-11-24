@@ -10,7 +10,7 @@ function paymentsTable(list, onChange) {
       t.status === 'active' && t.kind === 'payment' && canCancel() ? h('button', { class: 'btn sm danger', onclick: (e) => { e.stopPropagation(); cancelTxn(t, onChange); } }, 'إلغاء') : '',
     ]), { empty: 'لا توجد دفعات', rowClass: (i) => (list[i].status === 'cancelled' ? 'cancelled' : '') });
 }
-const canCancel = () => isAdmin() || S.me.staff_can_cancel;
+const canCancel = () => canWrite() && (isAdmin() || S.me.staff_can_cancel);
 
 function cancelTxn(t, onDone) {
   modal(`إلغاء العملية ${t.no}`, [
@@ -123,7 +123,7 @@ route(/^\/$/, async () => {
   const wrap = h('div');
   wrap.append(h('div', { class: 'page-head' },
     h('div', null, h('h1', null, 'الرئيسية'), h('div', { class: 'hint' }, `اليوم ${d.today} · متبقٍ لنهاية السنة ${d.days_to_year_end} يوم`)),
-    isAdmin() ? h('button', { class: 'btn lg', onclick: () => go('#/statement') }, '📄 كشف حساب شامل PDF') : ''));
+    seesAll() ? h('button', { class: 'btn lg', onclick: () => go('#/statement') }, '📄 كشف حساب شامل PDF') : ''));
 
   if (d.alerts.length) {
     wrap.append(h('div', { class: 'card tight' }, h('h3', null, '⚠️ تنبيهات'), d.alerts.map((a) => h('div', { class: `alert ${a.type.includes('failed') ? 'err' : ''}` },
@@ -150,12 +150,12 @@ route(/^\/$/, async () => {
 
   // أزرار سريعة للموظف
   const quick = h('div', { class: 'actions', style: { marginBottom: '16px' } });
-  for (const f of S.meta.facilities) {
+  for (const f of canWrite() ? S.meta.facilities : []) {
     if (f.kind === 'hall') quick.append(h('a', { class: 'btn lg', href: '#/hall/new' }, '+ حجز صالة'));
     if (f.kind === 'laundry') quick.append(h('a', { class: 'btn lg', href: '#/laundry' }, '+ طلب مغسلة'));
     if (f.kind === 'field') quick.append(h('a', { class: 'btn lg', href: '#/field/new' }, '+ حجز ملعب'));
   }
-  if (!isAdmin() && S.meta.facilities[0]) {
+  if (!seesAll() && S.meta.facilities[0]) {
     const fid = S.meta.facilities[0].id;
     quick.append(h('button', { class: 'btn lg in', onclick: () => moneyModal('income', fid) }, '+ إيداع'));
     quick.append(h('button', { class: 'btn lg out', onclick: () => moneyModal('expense', fid) }, '+ مصروف'));
@@ -169,7 +169,7 @@ route(/^\/$/, async () => {
     h('div', { class: 'list-acc' }, f.accounts.map((a) => h('div', null, h('span', null, '📍 ', a.name), money(a.balance)))),
     h('div', { class: 'actions mt' },
       h('a', { class: 'btn sm sec', href: `#/treasury/${f.id}` }, 'الخزنة'),
-      ({ hall: h('a', { class: 'btn sm sec', href: '#/hall' }, 'الصالة'), laundry: h('a', { class: 'btn sm sec', href: '#/laundry' }, 'المغسلة'),
+      isViewer() ? '' : ({ hall: h('a', { class: 'btn sm sec', href: '#/hall' }, 'الصالة'), laundry: h('a', { class: 'btn sm sec', href: '#/laundry' }, 'المغسلة'),
         field: h('a', { class: 'btn sm sec', href: '#/field' }, 'الملعب') })[f.kind] || '')))));
 
   if (d.today_events.hall.length || d.today_events.field.length) {
@@ -183,7 +183,7 @@ route(/^\/$/, async () => {
       d.recent_txns.map((t) => [noTag(t.no), t.op_date, t.facility_name, txnLabel(t), t.party || '', t.account_name,
         money(t.amount, t.direction === 'in' ? 'c-in' : 'c-out'), t.user_name]),
       { onRow: (i) => go(`#/txn/${d.recent_txns[i].id}`), rowClass: (i) => (d.recent_txns[i].status === 'cancelled' ? 'cancelled' : '') })));
-  if (isAdmin()) wrap.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('h3', null, 'آخر عمليات الموظفين'), h('span', { class: 'sp' }), h('a', { href: '#/audit' }, 'السجل الكامل')), historyList(d.recent_audit)));
+  if (seesAll()) wrap.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('h3', null, 'آخر عمليات الموظفين'), h('span', { class: 'sp' }), isAdmin() ? h('a', { href: '#/audit' }, 'السجل الكامل') : ''), historyList(d.recent_audit)));
   return wrap;
 });
 

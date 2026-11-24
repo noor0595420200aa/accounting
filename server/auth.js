@@ -40,14 +40,18 @@ function requireAdmin(req, res, next) {
 }
 
 const isAdmin = (u) => u && u.role === 'admin';
+const isViewer = (u) => u && u.role === 'viewer';
+// المدير والمشاهد (المالك) يرون كل المنشآت؛ المشاهد بدون أي تعديل
+const seesAll = (u) => isAdmin(u) || isViewer(u);
 
 // يتحقق أن المستخدم يملك صلاحية على المنشأة
 function assertFacility(user, facilityId) {
-  if (isAdmin(user)) return;
+  if (seesAll(user)) return;
   if (Number(user.facility_id) !== Number(facilityId)) throw new HttpError(403, 'لا تملك صلاحية على هذا القسم');
 }
 
 function assertCanCancel(user, facilityId) {
+  if (isViewer(user)) throw new HttpError(403, 'حساب المشاهدة للاطلاع فقط');
   assertFacility(user, facilityId);
   if (isAdmin(user)) return;
   if (getSetting('staff_can_cancel') !== '1') throw new HttpError(403, 'الإلغاء متاح للمدير فقط');
@@ -85,4 +89,4 @@ function logout(req, res) {
   res.json({ ok: true });
 }
 
-module.exports = { requireAuth, requireAdmin, isAdmin, assertFacility, assertCanCancel, login, logout, loadUser };
+module.exports = { requireAuth, requireAdmin, isAdmin, isViewer, seesAll, assertFacility, assertCanCancel, login, logout, loadUser };

@@ -35,8 +35,9 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin','staff')),
+  role TEXT NOT NULL CHECK (role IN ('admin','staff','viewer')),   -- viewer = المالك: مشاهدة فقط
   facility_id INTEGER REFERENCES facilities(id),
+  telegram_chat_id TEXT,                                          -- لاستلام التقارير على تيليجرام
   active INTEGER NOT NULL DEFAULT 1,
   must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
@@ -348,6 +349,29 @@ function migrate() {
       }
     }
   }
+  // المستخدمون: دور المشاهد (المالك) + رقم تيليجرام لكل مستخدم
+  const usql = db.prepare("SELECT sql FROM sqlite_master WHERE name='users'").get().sql;
+  if (!usql.includes('viewer')) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`CREATE TABLE users_new (
+        id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin','staff','viewer')), facility_id INTEGER REFERENCES facilities(id), telegram_chat_id TEXT,
+        active INTEGER NOT NULL DEFAULT 1, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`);
+      db.exec(`INSERT INTO users_new (id, username, display_name, password_hash, role, facility_id, active, must_change_password, created_at)
+        SELECT id, username, display_name, password_hash, role, facility_id, active, must_change_password, created_at FROM users`);
+      db.exec('DROP TABLE users; ALTER TABLE users_new RENAME TO users;');
+    })();
+    db.pragma('foreign_keys = ON');
+    // رقم المحادثة القديم في الإعدادات يصبح رقم المدير
+    const old = db.prepare("SELECT value FROM settings WHERE key='telegram_chat_id'").get();
+    if (old && old.value) {
+      db.prepare("UPDATE users SET telegram_chat_id=? WHERE id=(SELECT MIN(id) FROM users WHERE role='admin')").run(old.value);
+      db.prepare("UPDATE settings SET value='' WHERE key='telegram_chat_id'").run();
+    }
+  }
+  const rcols = db.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+  if (!rcols.includes('sent_to')) db.exec('ALTER TABLE reports ADD COLUMN sent_to TEXT');
   // جدول الديون: account_id يصبح اختيارياً + عمود السبب
   const fcols = db.prepare('PRAGMA table_info(fundings)').all();
   const accCol = fcols.find((c) => c.name === 'account_id');

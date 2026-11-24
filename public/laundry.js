@@ -235,11 +235,11 @@ route(/^\/debts$/, async () => {
     h('div', { class: 'card' }, h('h3', null, 'الزبائن المديونون'),
       table(['الزبون', 'عدد الطلبات', 'الإجمالي', 'مجموع ما دفعه', 'المتبقي عليه', ''],
         d.customers.map((c) => [c.name + (c.tag ? ` - ${c.tag}` : ''), c.orders, money(c.total), money(c.paid, 'c-in'), money(c.remaining, 'c-debt'),
-          h('button', { class: 'btn sm in', onclick: (e) => { e.stopPropagation(); payDebtModal(c); } }, 'تسديد')]),
-        { onRow: (i) => go(`#/laundry/c/${d.customers[i].customer_id}`), empty: 'لا توجد ديون 🎉' })),
+          canWrite() ? h('button', { class: 'btn sm in', onclick: (e) => { e.stopPropagation(); payDebtModal(c); } }, 'تسديد') : '']),
+        { onRow: canWrite() ? (i) => go(`#/laundry/c/${d.customers[i].customer_id}`) : null, empty: 'لا توجد ديون 🎉' })),
     h('div', { class: 'card' }, h('h3', null, 'تفاصيل الطلبات غير المسددة'),
       table(['الطلب', 'الزبون', 'نوع الخدمة', 'تاريخ الطلب', 'المبلغ الإجمالي', 'مجموع المدفوع', 'المتبقي', 'الدفعات (التاريخ — المبلغ — الموظف)'],
         d.orders.map((o) => [noTag(o.no), custName(o), o.service_name, o.order_date, money(o.price), money(o.paid, 'c-in'), money(o.remaining, 'c-debt'),
           o.payments.length ? h('div', null, o.payments.map((p) => h('div', { class: 'hint' }, `${p.op_date} — ${fmt(p.amount)} — ${p.user_name}`))) : 'لا توجد دفعات']),
-        { onRow: (i) => go(`#/laundry/o/${d.orders[i].id}`) })));
+        { onRow: canWrite() ? (i) => go(`#/laundry/o/${d.orders[i].id}`) : null })));
 });
