@@ -1,0 +1,266 @@
+/* التقارير وكشف الحساب والمستخدمون والسجل والإعدادات */
+'use strict';
+
+function periodPicker(pre = {}) {
+  const preset = sel('preset', [['day', 'تقرير يومي'], ['last7', 'آخر 7 أيام / أسبوعي'], ['month', 'تقرير شهري'], ['year', 'تقرير سنوي'],
+    ['range', 'بين تاريخين'], ['all', 'شامل من بداية النشاط']], pre.preset || 'day');
+  const date = field('التاريخ', h('input', { type: 'date', name: 'date', value: pre.date || today() }));
+  const month = field('الشهر', h('input', { type: 'month', name: 'month', value: pre.month || today().slice(0, 7) }));
+  const year = field('السنة', h('input', { type: 'number', name: 'year', value: pre.year || today().slice(0, 4), min: 2000, max: 2100 }));
+  const from = field('من', h('input', { type: 'date', name: 'from', value: pre.from || today().slice(0, 8) + '01' }));
+  const to = field('إلى', h('input', { type: 'date', name: 'to', value: pre.to || today() }));
+  const sync = () => {
+    const v = preset.value;
+    date.classList.toggle('hide', !['day', 'last7'].includes(v));
+    date.querySelector('span').textContent = v === 'last7' ? 'حتى تاريخ' : 'التاريخ';
+    month.classList.toggle('hide', v !== 'month');
+    year.classList.toggle('hide', v !== 'year');
+    from.classList.toggle('hide', v !== 'range');
+    to.classList.toggle('hide', v !== 'range');
+  };
+  preset.onchange = sync;
+  sync();
+  return [field('نوع التقرير / الفترة', preset), date, month, year, from, to];
+}
+
+function cleanParams(d) {
+  const p = { ...d };
+  const keep = { day: ['date'], last7: ['date'], month: ['month'], year: ['year'], range: ['from', 'to'], all: [] }[p.preset] || [];
+  for (const k of ['date', 'month', 'year', 'from', 'to']) if (!keep.includes(k)) delete p[k];
+  for (const k of Object.keys(p)) if (p[k] === '' || p[k] === false) delete p[k];
+  return p;
+}
+
+function reportActions(form, kind, preview) {
+  const params = () => ({ kind, ...cleanParams(formData(form)) });
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; } };
+  const view = h('button', { type: 'button', class: 'btn sec', onclick: () => { preview.src = `/api/reports/view${qs(params())}`; preview.classList.remove('hide'); } }, '👁 عرض');
+  const pdf = h('button', { type: 'button', class: 'btn', onclick: (e) => busy(e.currentTarget, async () => {
+    const w = window.open('', '_blank');
+    toast('جارِ إنشاء ملف PDF…');
+    const r = await api('POST', '/reports/generate', params());
+    if (w) w.location = `/api/reports/${r.id}/pdf`; else location.href = `/api/reports/${r.id}/pdf?dl=1`;
+  }) }, '📄 إنشاء PDF');
+  const xls = h('button', { type: 'button', class: 'btn sec', onclick: () => { location.href = `/api/reports/excel${qs(params())}`; } }, '📗 Excel');
+  const tg = isAdmin() ? h('button', { type: 'button', class: 'btn in', onclick: (e) => busy(e.currentTarget, async () => {
+    toast('جارِ الإنشاء والإرسال…');
+    const r = await api('POST', '/reports/generate', { ...params(), send: true });
+    if (r.sent && r.sent.ok) toast('تم إرسال التقرير عبر تيليجرام', 'ok'); else toast(`تم إنشاء التقرير لكن تعذر الإرسال: ${r.sent?.error || ''}`, 'err');
+  }) }, '✈️ إرسال التقرير عبر Telegram') : '';
+  return h('div', { class: 'actions mt' }, view, pdf, xls, tg);
+}
+
+async function reportHistory() {
+  const rows = await GET('/reports');
+  const tgBadge = (r) => ({ sent: badge('sent', 'أُرسل'), failed: badge('failed', 'فشل الإرسال'), none: badge('none', 'لم يُرسل') })[r.telegram_status];
+  return table(['التقرير', 'الفترة', 'أُنشئ', 'بواسطة', 'تيليجرام', ''],
+    rows.map((r) => [
+      h('span', null, r.title, r.auto ? badge('gray', ' تلقائي') : '', r.stale ? h('span', { class: 'badge b-partial' }, 'تغيّرت بياناته') : ''),
+      `${r.period_from || ''} — ${r.period_to || ''}`, dt(r.created_at), r.user_name || 'النظام',
+      h('span', { title: r.telegram_error || '' }, tgBadge(r), r.telegram_error ? h('div', { class: 'hint c-out' }, r.telegram_error.slice(0, 80)) : ''),
+      h('div', { class: 'row' },
+        r.file_name ? h('a', { class: 'btn sm sec', href: `/api/reports/${r.id}/pdf`, target: '_blank' }, 'فتح') : '',
+        isAdmin() && r.file_name ? h('button', { class: 'btn sm in', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try { await api('POST', `/reports/${r.id}/send`); toast('تم الإرسال', 'ok'); } catch (err) { toast(err.message, 'err'); }
+          reload();
+        } }, r.telegram_status === 'sent' ? 'إعادة إرسال' : 'إرسال') : '',
+        isAdmin() ? h('button', { class: 'btn sm ghost', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try { const x = await api('POST', `/reports/${r.id}/regenerate`, { send: true }); toast(x.sent?.ok ? 'تم التحديث والإرسال' : `تم التحديث${x.sent?.error ? ` — ${x.sent.error}` : ''}`, x.sent?.ok ? 'ok' : ''); } catch (err) { toast(err.message, 'err'); }
+          reload();
+        } }, 'تحديث وإرسال') : '')]),
+    { empty: 'لا توجد تقارير محفوظة' });
+}
+
+route(/^\/reports$/, async () => {
+  const preview = h('iframe', { class: 'preview hide', title: 'معاينة التقرير' });
+  const facs = S.meta.facilities;
+  const form = h('form', { class: 'card', onsubmit: (e) => e.preventDefault() },
+    h('div', { class: 'grid g3' }, periodPicker(),
+      isAdmin() ? field('المنشأة', sel('facility_id', [['', 'جميع المنشآت'], ...facs.map((f) => [f.id, f.name])])) : ''));
+  form.append(reportActions(form, 'period', preview));
+  return h('div', null,
+    h('div', { class: 'page-head' }, h('h1', null, '📊 التقارير'), isAdmin() ? h('a', { class: 'btn lg', href: '#/statement' }, '📄 كشف حساب شامل PDF') : ''),
+    h('p', { class: 'hint' }, 'التقرير اليومي يُنشأ تلقائياً بعد منتصف الليل عن اليوم المنتهي (00:00 — 23:59) مع ملخص تراكمي للشهر والسنة، ويُرسل عبر تيليجرام إن كان مفعلاً.'),
+    form, preview,
+    h('div', { class: 'card mt' }, h('h3', null, 'التقارير السابقة'), await reportHistory()));
+});
+
+route(/^\/statement$/, async () => {
+  const pre = hashQuery();
+  const preview = h('iframe', { class: 'preview hide', title: 'معاينة كشف الحساب' });
+  const facs = S.meta.facilities;
+  const scope = sel('scope', [['all', 'جميع المنشآت'], ['facility', 'منشأة / خزنة معينة'], ['account', 'حساب معين']], pre.account_id ? 'account' : pre.facility_id ? 'facility' : 'all');
+  const facF = field('المنشأة', sel('facility_id', facs.map((f) => [f.id, f.name]), pre.facility_id));
+  const accF = field('الحساب', sel('account_id', (isAdmin() ? S.meta.all_accounts : facs.flatMap((f) => f.accounts.map((a) => ({ ...a, facility_name: f.name }))))
+    .map((a) => [a.id, `${a.name} — ${a.facility_name}`]), pre.account_id));
+  const sync = () => { facF.classList.toggle('hide', scope.value !== 'facility'); accF.classList.toggle('hide', scope.value !== 'account'); };
+  scope.onchange = sync;
+  const form = h('form', { class: 'card', onsubmit: (e) => e.preventDefault() },
+    h('div', { class: 'grid g3' }, field('النطاق', scope), facF, accF,
+      isAdmin() ? field('موظف معين', sel('user_id', [['', 'كل الموظفين'], ...S.meta.users.map((u) => [u.id, u.display_name])])) : '',
+      periodPicker({ preset: 'all' })));
+  sync();
+  // نحذف حقول النطاق غير المختارة قبل الإرسال
+  const actions = reportActions({ querySelectorAll: (s) => {
+    const all = [...form.querySelectorAll(s)];
+    return all.filter((el) => !(el.name === 'facility_id' && scope.value !== 'facility') && !(el.name === 'account_id' && scope.value !== 'account') && el.name !== 'scope');
+  } }, 'statement', preview);
+  form.append(actions);
+  return h('div', null,
+    h('div', { class: 'page-head' }, h('h1', null, '📄 كشف حساب شامل PDF')),
+    h('p', { class: 'hint' }, 'يتضمن: الرصيد الافتتاحي، ما تم جمعه وصرفه، الرصيد المتبقي، مكان وجود الأموال، كل الإيداعات والمصروفات بالتاريخ مع الرصيد المتحرك، الموظفين، الديون والالتزامات، والتمويل الخارجي.'),
+    form, preview);
+});
+
+// ---------------- المستخدمون ----------------
+route(/^\/users$/, async () => {
+  const rows = await GET('/admin/users');
+  const facs = S.meta.facilities.filter((f) => f.kind !== 'general');
+  const edit = (u = null) => {
+    const role = sel('role', [['staff', 'موظف قسم'], ['admin', 'مدير']], u?.role || 'staff');
+    const fac = field('القسم الذي يدخل إليه', sel('facility_id', facs.map((f) => [f.id, f.name]), u?.facility_id));
+    const sync = () => fac.classList.toggle('hide', role.value === 'admin');
+    role.onchange = sync;
+    sync();
+    modal(u ? `تعديل المستخدم: ${u.display_name}` : 'إضافة مستخدم', [
+      field('اسم الموظف (يظهر في كل العمليات)', inp('display_name', { required: true, value: u?.display_name }), { req: true }),
+      field('اسم المستخدم للدخول', inp('username', { required: true, value: u?.username, dir: 'ltr' }), { req: true }),
+      field(u ? 'كلمة مرور جديدة (اتركها فارغة لعدم التغيير)' : 'كلمة المرور', inp('password', { type: 'password', dir: 'ltr', required: !u, minlength: 6 }), { req: !u }),
+      field('الصلاحية', role), fac,
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'active', checked: u ? !!u.active : true }), 'الحساب فعّال'),
+    ], async (d, idem) => {
+      if (u) await api('PUT', `/admin/users/${u.id}`, d, { idem }); else await api('POST', '/admin/users', d, { idem });
+      closeModal(); await refreshMeta(); toast('تم الحفظ', 'ok'); reload();
+    });
+  };
+  return h('div', null,
+    h('div', { class: 'page-head' }, h('h1', null, '👥 المستخدمون'), h('button', { class: 'btn', onclick: () => edit() }, '+ إضافة مستخدم')),
+    h('div', { class: 'card' }, table(['الموظف', 'اسم المستخدم', 'الصلاحية', 'القسم', 'الحالة', 'آخر نشاط', ''],
+      rows.map((u) => [u.display_name, h('span', { dir: 'ltr' }, u.username), u.role === 'admin' ? 'مدير' : 'موظف', u.facility_name || 'الكل',
+        u.active ? badge('active', 'فعّال') : badge('cancelled', 'معطل'), dt(u.last_activity),
+        h('div', { class: 'row' }, h('button', { class: 'btn sm sec', onclick: () => edit(u) }, 'تعديل'),
+          h('a', { class: 'btn sm ghost', href: `#/audit?user_id=${u.id}` }, 'سجل نشاطه'))]))));
+});
+
+// ---------------- سجل النشاطات ----------------
+route(/^\/audit$/, async () => {
+  const pre = hashQuery();
+  const listBox = h('div');
+  const userS = sel('user_id', [['', 'كل الموظفين'], ...S.meta.users.map((u) => [u.id, u.display_name])], pre.user_id);
+  const facS = sel('facility_id', [['', 'كل الأقسام'], ...S.meta.facilities.map((f) => [f.id, f.name])]);
+  const actS = sel('action', [['', 'كل العمليات'], ['create', 'إضافة'], ['update', 'تعديل'], ['cancel', 'إلغاء'], ['login', 'دخول'], ['send', 'إرسال']]);
+  const from = h('input', { type: 'date', value: addDays(today(), -7) });
+  const to = h('input', { type: 'date' });
+  const q = h('input', { placeholder: 'رقم أو نص' });
+  const load = async () => {
+    const rows = await GET(`/admin/audit${qs({ user_id: userS.value, facility_id: facS.value, action: actS.value, from: from.value, to: to.value, q: q.value })}`);
+    listBox.innerHTML = '';
+    listBox.append(table(['الوقت', 'الموظف', 'القسم', 'العملية', 'الرقم', 'التفاصيل'],
+      rows.map((a) => [dt(a.created_at), a.user_name || 'النظام', a.facility_name || '—',
+        ({ create: 'إضافة', update: 'تعديل', cancel: 'إلغاء', login: 'دخول', send: 'إرسال', download: 'تنزيل' })[a.action] || a.action,
+        a.ref_no ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); lookup(a.ref_no); } }, noTag(a.ref_no)) : '',
+        h('div', null, a.summary || '', a.details ? h('details', null, h('summary', { class: 'hint' }, 'التفاصيل'), h('pre', { style: { whiteSpace: 'pre-wrap', fontSize: '12px', direction: 'ltr', textAlign: 'left' } }, JSON.stringify(JSON.parse(a.details), null, 1))) : '')]),
+      { empty: 'لا يوجد نشاط' }));
+  };
+  await load();
+  return h('div', null, h('div', { class: 'page-head' }, h('h1', null, '🕑 سجل النشاطات والرقابة')),
+    h('div', { class: 'card' }, h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); load(); } },
+      field('الموظف', userS), field('القسم', facS), field('العملية', actS), field('من', from), field('إلى', to), field('بحث', q), h('button', { class: 'btn' }, 'عرض')), listBox));
+});
+
+// ---------------- الإعدادات ----------------
+route(/^\/settings$/, async () => {
+  const s = await GET('/admin/settings');
+  const tab = hashQuery().tab || 'general';
+  const tabs = h('div', { class: 'tabs' }, [['general', 'عام'], ['telegram', 'تيليجرام والتقارير'], ['facilities', 'المنشآت والترقيم'], ['categories', 'التصنيفات'],
+    ['services', 'خدمات المغسلة'], ['backup', 'النسخ الاحتياطي']].map(([k, l]) => h('a', { href: `#/settings?tab=${k}`, class: tab === k ? 'on' : '' }, l)));
+  const saveForm = (form, extra = () => ({})) => async (e) => {
+    e.preventDefault();
+    try { await api('PUT', '/admin/settings', { ...formData(form), ...extra() }); toast('تم الحفظ', 'ok'); S.me = await GET('/me'); await refreshMeta(); reload(); } catch (err) { toast(err.message, 'err'); }
+  };
+  let body;
+  if (tab === 'general') {
+    const form = h('form', { class: 'card' },
+      h('div', { class: 'grid g2' },
+        field('المنطقة الزمنية', inp('timezone', { value: s.timezone, dir: 'ltr' }), { hint: 'مثال: Asia/Hebron أو Asia/Amman' }),
+        field('رمز العملة', inp('currency', { value: s.currency })),
+        field('بداية عمل الملعب', inp('field_open', { type: 'time', value: s.field_open })),
+        field('نهاية عمل الملعب', inp('field_close', { type: 'time', value: s.field_close }), { hint: 'يمكن أن تكون بعد منتصف الليل' }),
+        field('سعر ساعة الملعب الافتراضي', moneyInp('field_hour_price', { value: s.field_hour_price }))),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'staff_can_cancel', checked: s.staff_can_cancel === '1' }), 'السماح للموظفين بإلغاء الحجوزات والعمليات في أقسامهم (مع ذكر السبب)'),
+      h('button', { class: 'btn mt' }, 'حفظ'));
+    form.onsubmit = saveForm(form);
+    body = form;
+  } else if (tab === 'telegram') {
+    const form = h('form', { class: 'card' },
+      h('h3', null, 'ربط بوت تيليجرام'),
+      h('p', { class: 'hint' }, '1) أنشئ بوتاً عبر @BotFather وانسخ التوكن. 2) أضف البوت للمجموعة أو أرسل له رسالة. 3) أدخل رقم المحادثة (chat id).'),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'telegram_enabled', checked: s.telegram_enabled === '1' }), 'تفعيل الإرسال التلقائي'),
+      h('div', { class: 'grid g2' },
+        field('توكن البوت', inp('telegram_token', { dir: 'ltr', placeholder: s.telegram_token_set ? '•••••• (محفوظ — اتركه فارغاً لعدم التغيير)' : '123456:ABC…', autocomplete: 'off' })),
+        field('رقم المحادثة المستقبلة (chat id)', inp('telegram_chat_id', { dir: 'ltr', value: s.telegram_chat_id }))),
+      h('h3', { class: 'mt' }, 'مواعيد التقارير التلقائية'),
+      h('div', { class: 'grid g3' },
+        field('وقت التقرير اليومي', inp('daily_report_time', { type: 'time', value: s.daily_report_time }), { hint: 'عن اليوم المنتهي — يُنصح 00:05' }),
+        field('يوم التقرير الأسبوعي', sel('weekly_report_day', DAY_NAMES.map((d, i) => [i, d]), s.weekly_report_day)),
+        field('وقت التقرير الأسبوعي', inp('weekly_report_time', { type: 'time', value: s.weekly_report_time }))),
+      h('div', { class: 'actions mt' }, h('button', { class: 'btn' }, 'حفظ'),
+        h('button', { type: 'button', class: 'btn sec', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try { await api('POST', '/admin/settings/telegram-test'); toast('تم إرسال رسالة اختبار', 'ok'); } catch (err) { toast(err.message, 'err'); }
+          e.target.disabled = false;
+        } }, 'إرسال رسالة اختبار')));
+    form.onsubmit = saveForm(form);
+    body = form;
+  } else if (tab === 'facilities') {
+    body = h('div', null, h('div', { class: 'card' },
+      h('p', { class: 'hint' }, 'كل منشأة لها رمز ترقيم مستقل (مثل A100، U100، D100). كل حجز أو طلب أو دفعة أو مصروف يأخذ الرقم التالي في تسلسل منشأته.'),
+      table(['المنشأة', 'الرمز', 'الرقم التالي', 'الحالة', ''], s.facilities.map((f) => [f.name, noTag(f.prefix), noTag(`${f.prefix}${f.next_no}`),
+        f.active ? badge('active', 'فعّالة') : badge('cancelled', 'موقوفة'),
+        h('button', { class: 'btn sm sec', onclick: () => modal(`تعديل ${f.name}`, [
+          field('الاسم', inp('name', { value: f.name, required: true })),
+          field('رمز الترقيم', inp('prefix', { value: f.prefix, dir: 'ltr', maxlength: 3 })),
+          field('الرقم التالي', inp('next_no', { type: 'number', value: f.next_no, min: 1 })),
+          f.kind === 'other' ? h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'active', checked: !!f.active }), 'فعّالة') : '',
+        ], async (d, idem) => { await api('PUT', `/admin/facilities/${f.id}`, d, { idem }); closeModal(); await refreshMeta(); reload(); }) }, 'تعديل')])),
+      h('button', { class: 'btn mt', onclick: () => modal('إضافة منشأة جديدة', [
+        field('اسم المنشأة', inp('name', { required: true })), field('رمز الترقيم', inp('prefix', { required: true, dir: 'ltr', maxlength: 3 }), { hint: 'حرف إنجليزي، مثل B' }),
+        h('p', { class: 'hint' }, 'سيتم إنشاء خزنة للمنشأة وصفحة إيداعات ومصروفات خاصة بها.'),
+      ], async (d, idem) => { await api('POST', '/admin/facilities', d, { idem }); closeModal(); await refreshMeta(); reload(); }) }, '+ إضافة منشأة')));
+  } else if (tab === 'categories') {
+    body = h('div', null, s.facilities.map((f) => h('div', { class: 'card' }, h('h3', null, f.name),
+      ['expense', 'income'].map((k) => h('div', { class: 'mt' }, h('b', null, k === 'expense' ? 'تصنيفات المصروفات: ' : 'أنواع الإيداعات: '),
+        h('div', { class: 'row', style: { marginTop: '6px' } }, s.categories.filter((c) => c.facility_id === f.id && c.kind === k).map((c) => h('button', {
+          class: `btn sm ${c.active ? 'sec' : 'ghost'}`, title: c.active ? 'اضغط للإيقاف' : 'اضغط للتفعيل',
+          onclick: async () => { await api('PUT', `/admin/categories/${c.id}`, { active: !c.active }); await refreshMeta(); reload(); },
+        }, c.active ? c.name : `${c.name} (موقوف)`)),
+        h('button', { class: 'btn sm', onclick: () => modal('إضافة تصنيف', [field('الاسم', inp('name', { required: true }))], async (d, idem) => {
+          await api('POST', '/admin/categories', { ...d, facility_id: f.id, kind: k }, { idem }); closeModal(); await refreshMeta(); reload();
+        }) }, '+ إضافة')))))));
+  } else if (tab === 'services') {
+    const services = await GET('/laundry/services?all=1');
+    const edit = (sv = null) => modal(sv ? 'تعديل خدمة' : 'إضافة خدمة', [
+      field('اسم نوع الخدمة', inp('name', { required: true, value: sv?.name })),
+      field('السعر الافتراضي (اختياري)', moneyInp('default_price', { value: sv ? major(sv.default_price) : 0 })),
+      sv ? h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'active', checked: !!sv.active }), 'فعّالة') : '',
+    ], async (d, idem) => { if (sv) await api('PUT', `/laundry/services/${sv.id}`, d, { idem }); else await api('POST', '/laundry/services', d, { idem }); closeModal(); reload(); });
+    body = h('div', { class: 'card' }, table(['الخدمة', 'السعر الافتراضي', 'الحالة', ''], services.map((sv) => [sv.name, money(sv.default_price),
+      sv.active ? badge('active', 'فعّالة') : badge('cancelled', 'موقوفة'), h('button', { class: 'btn sm sec', onclick: () => edit(sv) }, 'تعديل')])),
+    h('button', { class: 'btn mt', onclick: () => edit() }, '+ إضافة خدمة'));
+  } else if (tab === 'backup') {
+    const list = await GET('/admin/backups');
+    body = h('div', { class: 'card' },
+      h('p', { class: 'hint' }, `يتم أخذ نسخة احتياطية تلقائية يومياً، ويُحتفظ بآخر ${s.backup_keep} نسخة.`),
+      h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); saveForm(e.target)(e); } },
+        field('وقت النسخ اليومي', inp('backup_time', { type: 'time', value: s.backup_time })), field('عدد النسخ المحفوظة', inp('backup_keep', { type: 'number', value: s.backup_keep, min: 3 })),
+        h('button', { class: 'btn sec' }, 'حفظ')),
+      h('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; try { await api('POST', '/admin/backups'); toast('تم إنشاء نسخة احتياطية', 'ok'); } catch (err) { toast(err.message, 'err'); } reload(); } }, 'نسخة احتياطية الآن'),
+      h('div', { class: 'mt' }, table(['الملف', 'الحجم', 'الوقت', ''], list.map((b) => [h('span', { dir: 'ltr' }, b.name), `${(b.size / 1024).toFixed(0)} KB`, dt(b.mtime),
+        h('a', { class: 'btn sm sec', href: `/api/admin/backups/${encodeURIComponent(b.name)}` }, 'تنزيل')]), { empty: 'لا توجد نسخ بعد' })));
+  }
+  return h('div', null, h('div', { class: 'page-head' }, h('h1', null, '⚙️ الإعدادات')), tabs, body);
+});
+
+boot();

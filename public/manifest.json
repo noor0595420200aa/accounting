@@ -1,0 +1,11 @@
+{
+  "name": "نظام إدارة الصالة والمغسلة والملعب",
+  "short_name": "إدارة الأنشطة",
+  "start_url": "/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#f3f6fa",
+  "theme_color": "#1f4e79",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

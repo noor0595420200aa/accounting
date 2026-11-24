@@ -1,0 +1,20 @@
+{
+  "name": "three-activities-accounting",
+  "version": "1.0.0",
+  "private": true,
+  "description": "نظام إدارة الصالة والمغسلة والملعب",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@fontsource/cairo": "5.2.6",
+    "bcryptjs": "3.0.3",
+    "better-sqlite3": "13.2.0",
+    "exceljs": "4.4.0",
+    "express": "5.3.0",
+    "puppeteer-core": "25.18.1"
+  }
+}
