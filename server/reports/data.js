@@ -128,7 +128,7 @@ function bookingRemainingAsOf(refType, tbl, fid, to) {
 function fundingsAsOf(to, fid = null) {
   const rows = db.prepare(`SELECT fu.*, f.name AS facility_name, a.name AS account_name, sa.name AS source_account_name,
       u.display_name AS user_name
-    FROM fundings fu JOIN facilities f ON f.id=fu.facility_id JOIN accounts a ON a.id=fu.account_id
+    FROM fundings fu JOIN facilities f ON f.id=fu.facility_id LEFT JOIN accounts a ON a.id=fu.account_id
     LEFT JOIN accounts sa ON sa.id=fu.source_account_id JOIN users u ON u.id=fu.created_by
     WHERE fu.status='active' AND fu.op_date<=? ${fid ? 'AND fu.facility_id=?' : ''} ORDER BY fu.op_date`)
     .all(...(fid ? [to, fid] : [to]));
@@ -137,6 +137,10 @@ function fundingsAsOf(to, fid = null) {
       AND status='active' AND op_date<=?`).get(f.id, to).s;
     f.outstanding = f.amount - f.repaid;
     f.external = !f.source_account_id;
+    f.debt_status = f.outstanding <= 0 ? 'settled' : f.repaid > 0 ? 'partial' : 'open';
+    f.payments = db.prepare(`SELECT t.no, t.op_date, t.amount, t.notes, a.name AS account_name, u.display_name AS user_name
+      FROM txns t JOIN accounts a ON a.id=t.account_id JOIN users u ON u.id=t.user_id
+      WHERE t.ref_type='funding' AND t.ref_id=? AND t.kind='funding_repay' AND t.status='active' AND t.op_date<=? ORDER BY t.op_date, t.id`).all(f.id, to);
   }
   return rows;
 }

@@ -220,10 +220,14 @@ route(/^\/laundry\/c\/(\d+)$/, async (id) => {
 
 // ======================= الديون =======================
 route(/^\/debts$/, async () => {
-  const d = await GET('/laundry/debts');
+  const [d, owed] = await Promise.all([GET('/laundry/debts'), GET('/fundings')]);
+  const owedOpen = owed.filter((f) => f.status === 'active' && f.outstanding > 0);
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, '📒 الديون')),
-    laundryTabs('#/debts'),
+    h('div', { class: 'tabs' }, h('a', { href: '#/debts', class: 'on' }, 'ديون الزبائن لنا'), h('a', { href: '#/fundings' }, `الديون علينا (${owedOpen.length})`)),
+    owedOpen.length ? h('a', { class: 'alert', href: '#/fundings', style: { display: 'flex' } },
+      h('span', null, `علينا ${owedOpen.length} دين لم يُسدد بقيمة ${fmt(owedOpen.reduce((x, f) => x + f.outstanding, 0))}: `,
+        owedOpen.map((f) => `${f.party} (${f.facility_name})`).join('، ')), h('span', { class: 'btn sm sec' }, 'عرض')) : '',
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } },
       kpi('إجمالي الديون المستحقة', money(d.total), 'debt'), kpi('عدد الزبائن المديونين', d.customers.length, 'plain'),
       kpi('عدد الطلبات غير المسددة', d.orders.length, 'plain')),

@@ -142,6 +142,7 @@ route(/^\/$/, async () => {
     N.field !== null ? kpi('حجوزات ملعب جديدة اليوم', N.field, 'plain') : '',
     N.laundry !== null ? kpi('طلبات المغسلة اليوم', N.laundry, 'plain') : '',
     N.laundry !== null ? kpi('إجمالي الديون على الزبائن', money(d.debts), 'debt') : '',
+    h('a', { href: '#/fundings', style: { color: 'inherit' } }, kpi('ديون علينا لم تُسدد', money(d.owed_total), d.owed_total ? 'out' : 'plain')),
     kpi('إيرادات منذ بداية السنة', money(d.ytd.tin), 'in'),
     kpi('مصروفات منذ بداية السنة', money(d.ytd.tout), 'out'),
     kpi('صافي حركة السنة', money(d.ytd.tin - d.ytd.tout), 'plain'),

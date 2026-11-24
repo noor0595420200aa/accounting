@@ -165,16 +165,17 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at TEXT NOT NULL
 );
 
--- التمويل / الديون الخارجية لصالح منشأة
+-- الديون على المنشأة: لمين ندين، كم، وليش. account_id فارغ إذا لم يصل مال للصندوق (مثل الشراء بالدين)
 CREATE TABLE IF NOT EXISTS fundings (
   id INTEGER PRIMARY KEY,
   no TEXT NOT NULL UNIQUE,
   facility_id INTEGER NOT NULL REFERENCES facilities(id),
-  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  account_id INTEGER REFERENCES accounts(id),
   source_account_id INTEGER REFERENCES accounts(id),
   party TEXT NOT NULL,
   amount INTEGER NOT NULL CHECK (amount > 0),
   op_date TEXT NOT NULL,
+  reason TEXT,
   notes TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','cancelled')),
   cancel_reason TEXT,
@@ -346,6 +347,26 @@ function migrate() {
           .run(f.id, name, type, now.slice(0, 10), now);
       }
     }
+  }
+  // جدول الديون: account_id يصبح اختيارياً + عمود السبب
+  const fcols = db.prepare('PRAGMA table_info(fundings)').all();
+  const accCol = fcols.find((c) => c.name === 'account_id');
+  if (!fcols.some((c) => c.name === 'reason') || (accCol && accCol.notnull)) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`CREATE TABLE fundings_new (
+        id INTEGER PRIMARY KEY, no TEXT NOT NULL UNIQUE, facility_id INTEGER NOT NULL REFERENCES facilities(id),
+        account_id INTEGER REFERENCES accounts(id), source_account_id INTEGER REFERENCES accounts(id), party TEXT NOT NULL,
+        amount INTEGER NOT NULL CHECK (amount > 0), op_date TEXT NOT NULL, reason TEXT, notes TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','cancelled')), cancel_reason TEXT,
+        cancelled_by INTEGER REFERENCES users(id), cancelled_at TEXT, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL)`);
+      db.exec(`INSERT INTO fundings_new (id, no, facility_id, account_id, source_account_id, party, amount, op_date, reason, notes, status,
+        cancel_reason, cancelled_by, cancelled_at, created_by, created_at)
+        SELECT id, no, facility_id, account_id, source_account_id, party, amount, op_date, notes, notes, status,
+        cancel_reason, cancelled_by, cancelled_at, created_by, created_at FROM fundings`);
+      db.exec('DROP TABLE fundings; ALTER TABLE fundings_new RENAME TO fundings;');
+    })();
+    db.pragma('foreign_keys = ON');
   }
   db.prepare("UPDATE accounts SET name='كاش' WHERE type='safe' AND name IN ('خزنة الصالة','خزنة المغسلة','خزنة الملعب')").run();
 }

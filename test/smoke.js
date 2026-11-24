@@ -168,18 +168,32 @@ async function fail(who, method, url, body, re) {
   await ok('admin', 'POST', '/accounts', { facility_id: F.hall.id, name: 'أسامة', type: 'employee', phone: '0599000000', opening_balance: 0 });
   const general = meta.facilities.find((f) => f.kind === 'general');
   await ok('admin', 'PUT', `/accounts/${general.accounts[0].id}`, { opening_balance: 10000 });
-  const fu = await ok('admin', 'POST', '/fundings', { facility_id: F.field.id, account_id: acc('field'), source_account_id: general.accounts[0].id, party: 'المالك', amount: 1000 });
-  await ok('admin', 'POST', `/fundings/${fu.id}/repay`, { amount: 100, account_id: acc('field') });
-  const ext = await ok('admin', 'POST', '/fundings', { facility_id: F.hall.id, account_id: acc('hall'), party: 'قرض من أبو علي', amount: 500 });
-  assert.ok(ext.no.startsWith('A'));
-  step('employee account, internal + external funding with repayment');
+  // دين على الملعب: استلمنا المبلغ كاش، وسداده يحتاج سبباً
+  const fu = await ok('admin', 'POST', '/fundings', { facility_id: F.field.id, received: 'yes', account_id: acc('field'), party: 'أبو علي', amount: 1000, reason: 'صيانة الإنارة' });
+  await fail('admin', 'POST', '/fundings', { facility_id: F.field.id, party: 'x', amount: 5 }, /سبب الدين/);
+  await fail('admin', 'POST', `/fundings/${fu.id}/repay`, { amount: 100, account_id: acc('field') }, /سبب/);
+  const r1 = await ok('admin', 'POST', `/fundings/${fu.id}/repay`, { amount: 100, account_id: acc('field'), reason: 'دفعة أولى' });
+  assert.strictEqual(r1.settled, false);
+  let fl = (await ok('admin', 'GET', '/fundings')).find((x) => x.id === fu.id);
+  assert.strictEqual(fl.debt_status, 'partial');
+  const r2 = await ok('admin', 'POST', `/fundings/${fu.id}/repay`, { amount: 900, account_id: acc('field'), reason: 'تسديد كامل', allow_negative: true });
+  assert.strictEqual(r2.settled, true);
+  fl = (await ok('admin', 'GET', '/fundings')).find((x) => x.id === fu.id);
+  assert.strictEqual(fl.debt_status, 'settled');
+  assert.deepStrictEqual(fl.txns.filter((t) => t.kind === 'funding_repay').map((t) => t.notes), ['دفعة أولى', 'تسديد كامل']);
+  // دين على الصالة بدون استلام مصاري (شراء بالدين): لا يدخل الصندوق
+  const hallBefore = (await ok('admin', 'GET', `/treasury/${F.hall.id}`)).current;
+  const ext = await ok('admin', 'POST', '/fundings', { facility_id: F.hall.id, received: 'no', party: 'محل الكراسي', amount: 500, reason: 'شراء كراسي بالدين' });
+  assert.strictEqual((await ok('admin', 'GET', `/treasury/${F.hall.id}`)).current, hallBefore);
+  assert.strictEqual((await ok('admin', 'GET', '/dashboard')).owed_total, 50000);
+  step('employee account; debts owed by facility with reasons, repayments with reasons, status -> settled');
 
   // ---- التقارير ----
   const rep = require('../server/reports/data').buildPeriodReport({ preset: 'day', date: T });
   const S = rep.summary;
   assert.strictEqual(S.receivables, 0);
   assert.strictEqual(S.funding_external, 50000);
-  assert.strictEqual(S.funding_internal, 90000);
+  assert.strictEqual(S.funding_internal, 0);
   assert.strictEqual(S.net_assets, S.balances + S.receivables - S.funding_external);
   const hallSec = rep.sections.find((s) => s.facility.kind === 'hall');
   assert.strictEqual(hallSec.new_bookings_count, 2);

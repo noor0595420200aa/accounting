@@ -257,16 +257,18 @@ r.get('/treasury/:fid', (req, res) => {
   res.json(t);
 });
 
-// ---------- التمويل / الديون الخارجية ----------
+// ---------- الديون على المنشآت (لمين ندين) ----------
+// لا يوجد تمويل تلقائي من أي حساب: الدين يُسجل باسم الدائن وسببه، وكل سداد يُسجل مع سببه
 function fundingRow(f) {
   const rep = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM txns WHERE ref_type='funding' AND ref_id=? AND kind='funding_repay' AND status='active'`).get(f.id).s;
   f.repaid = rep;
   f.outstanding = f.status === 'cancelled' ? 0 : f.amount - rep;
+  f.debt_status = f.status === 'cancelled' ? 'cancelled' : f.outstanding <= 0 ? 'settled' : rep > 0 ? 'partial' : 'open';
   return f;
 }
 
 const FUND_SELECT = `SELECT fu.*, f.name AS facility_name, a.name AS account_name, sa.name AS source_account_name, u.display_name AS user_name
-  FROM fundings fu JOIN facilities f ON f.id=fu.facility_id JOIN accounts a ON a.id=fu.account_id
+  FROM fundings fu JOIN facilities f ON f.id=fu.facility_id LEFT JOIN accounts a ON a.id=fu.account_id
   LEFT JOIN accounts sa ON sa.id=fu.source_account_id JOIN users u ON u.id=fu.created_by`;
 
 r.get('/fundings', (req, res) => {
@@ -282,34 +284,28 @@ r.post('/fundings', (req, res) => {
   const B = req.body || {};
   const fid = Number(B.facility_id);
   const fac = L.getFacility(fid);
-  const acc = L.getAccountFor(B.account_id, fid);
   const amount = toMinor(B.amount, 'المبلغ');
   const opDate = reqDate(B.op_date, 'التاريخ', today());
-  const party = str(B.party, 'الجهة الممولة', { required: true, max: 200 });
+  const party = str(B.party, 'اسم الدائن (لمين الدين)', { required: true, max: 200 });
+  const reason = str(B.reason, 'سبب الدين', { required: true, max: 500 });
   const notes = str(B.notes, 'ملاحظات');
-  let src = null;
-  if (B.source_account_id) {
-    src = L.getAccountFor(B.source_account_id, null);
-    if (src.id === acc.id) throw bad('الحساب المصدر هو نفس الحساب المستلم');
-  }
+  // إذا استلمنا مالاً نحدد وين وصل؛ وإذا كان شراء بالدين لا يدخل مال للصندوق
+  const acc = B.received === false || B.received === 'no' || !B.account_id ? null : L.getAccountFor(B.account_id, fid);
   const out = db.transaction(() => {
-    if (src) checkBalance(req.user, src, amount, B.allow_negative);
     const no = nextNo(fid);
-    const info = db.prepare(`INSERT INTO fundings (no, facility_id, account_id, source_account_id, party, amount, op_date, notes, created_by, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(no, fid, acc.id, src ? src.id : null, party, amount, opDate, notes, req.user.id, nowISO());
+    const info = db.prepare(`INSERT INTO fundings (no, facility_id, account_id, party, amount, op_date, reason, notes, created_by, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(no, fid, acc ? acc.id : null, party, amount, opDate, reason, notes, req.user.id, nowISO());
     const id = info.lastInsertRowid;
     audit(req.user, 'create', 'funding', id, {
-      facilityId: fid, refNo: no, summary: `تمويل ${fmt(amount)} لصالح ${fac.name} من ${src ? src.name : party}`,
+      facilityId: fid, refNo: no, summary: `دين على ${fac.name} لصالح ${party} بقيمة ${fmt(amount)} — السبب: ${reason}`,
     });
-    L.postTxn(req.user, {
-      facilityId: fid, accountId: acc.id, direction: 'in', amount, kind: 'funding', category: 'تمويل',
-      refType: 'funding', refId: id, refNo: no, party, notes, opDate,
-    });
-    if (src) {
+    if (acc) {
       L.postTxn(req.user, {
-        facilityId: src.facility_id, accountId: src.id, direction: 'out', amount, kind: 'funding_out', category: 'تمويل',
-        refType: 'funding', refId: id, refNo: no, party: fac.name, notes, opDate,
+        facilityId: fid, accountId: acc.id, direction: 'in', amount, kind: 'funding', category: 'دين علينا',
+        refType: 'funding', refId: id, refNo: no, party, notes: reason, opDate,
       });
+    } else {
+      require('../util').markStale([opDate]);
     }
     return { id, no };
   })();
@@ -320,27 +316,34 @@ r.post('/fundings/:id/repay', (req, res) => {
   if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const f = db.prepare('SELECT * FROM fundings WHERE id=?').get(Number(req.params.id));
   if (!f) throw new HttpError(404, 'غير موجود');
-  if (f.status === 'cancelled') throw bad('التمويل ملغي');
+  if (f.status === 'cancelled') throw bad('الدين ملغي');
   const amount = toMinor(req.body.amount, 'المبلغ');
   const acc = L.getAccountFor(req.body.account_id, f.facility_id);
   const opDate = reqDate(req.body.op_date, 'التاريخ', today());
+  const reason = str(req.body.reason ?? req.body.notes, 'سبب / تفاصيل السداد', { required: true, max: 500 });
   const out = db.transaction(() => {
     fundingRow(f);
+    if (f.outstanding <= 0) throw bad('الدين مسدد بالكامل');
     if (amount > f.outstanding) throw bad(`المبلغ أكبر من المتبقي (${fmt(f.outstanding)})`);
     checkBalance(req.user, acc, amount, req.body.allow_negative);
-    const notes = str(req.body.notes, 'ملاحظات');
     const t = L.postTxn(req.user, {
-      facilityId: f.facility_id, accountId: acc.id, direction: 'out', amount, kind: 'funding_repay', category: 'سداد تمويل',
-      refType: 'funding', refId: f.id, refNo: f.no, party: f.party, notes, opDate,
+      facilityId: f.facility_id, accountId: acc.id, direction: 'out', amount, kind: 'funding_repay', category: 'سداد دين علينا',
+      refType: 'funding', refId: f.id, refNo: f.no, party: f.party, notes: reason, opDate,
     });
+    // بيانات قديمة فقط: تمويل كان من حساب داخلي
     if (f.source_account_id) {
       const src = db.prepare('SELECT * FROM accounts WHERE id=?').get(f.source_account_id);
       L.postTxn(req.user, {
         facilityId: src.facility_id, accountId: src.id, direction: 'in', amount, kind: 'funding_repay_in', category: 'استرداد تمويل',
-        refType: 'funding', refId: f.id, refNo: f.no, party: L.getFacility(f.facility_id).name, notes, opDate,
+        refType: 'funding', refId: f.id, refNo: f.no, party: L.getFacility(f.facility_id).name, notes: reason, opDate,
       });
     }
-    return { ok: true, no: t.no };
+    const left = f.outstanding - amount;
+    audit(req.user, 'update', 'funding', f.id, {
+      facilityId: f.facility_id, refNo: f.no,
+      summary: `سداد ${fmt(amount)} من دين ${f.party} — ${left <= 0 ? 'تم السداد بالكامل' : `المتبقي ${fmt(left)}`} — السبب: ${reason}`,
+    });
+    return { ok: true, no: t.no, settled: left <= 0, remaining: left };
   })();
   res.json(out);
 });
@@ -357,7 +360,7 @@ r.post('/fundings/:id/cancel', (req, res) => {
     }
     db.prepare("UPDATE fundings SET status='cancelled', cancel_reason=?, cancelled_by=?, cancelled_at=? WHERE id=?")
       .run(reason, req.user.id, nowISO(), f.id);
-    audit(req.user, 'cancel', 'funding', f.id, { facilityId: f.facility_id, refNo: f.no, summary: `إلغاء تمويل — ${reason}`, details: { original: f } });
+    audit(req.user, 'cancel', 'funding', f.id, { facilityId: f.facility_id, refNo: f.no, summary: `إلغاء دين — ${reason}`, details: { original: f } });
   })();
   res.json({ ok: true });
 });

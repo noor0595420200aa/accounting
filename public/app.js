@@ -195,7 +195,7 @@ function menuItems() {
   if (has('field')) m.push(['#/field', '⚽', 'الملعب']);
   for (const f of facs.filter((x) => x.kind === 'other')) m.push([`#/finance/${f.id}`, '🏢', f.name]);
   m.push(['#/treasury', '💰', 'الخزن والحسابات']);
-  if (has('laundry')) m.push(['#/debts', '📒', 'الديون']);
+  m.push([has('laundry') ? '#/debts' : '#/fundings', '📒', 'الديون']);
   m.push(['#/reports', '📊', 'التقارير']);
   if (isAdmin()) {
     m.push(['#/users', '👥', 'المستخدمون']);

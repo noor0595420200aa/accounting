@@ -92,6 +92,12 @@ r.get('/dashboard', (req, res) => {
       AND t.kind='payment' AND t.status='active'),0)),0) d FROM orders o WHERE o.status IN ('unpaid','partial')`).get().d;
   }
 
+  // الديون علينا اللي لسا ما انسددت
+  const owed = db.prepare(`SELECT fu.id, fu.amount, fu.party, f.name AS facility_name,
+      fu.amount - COALESCE((SELECT SUM(amount) FROM txns t WHERE t.ref_type='funding' AND t.ref_id=fu.id AND t.kind='funding_repay' AND t.status='active'),0) AS outstanding
+    FROM fundings fu JOIN facilities f ON f.id=fu.facility_id WHERE fu.status='active' ${fid ? 'AND fu.facility_id=?' : ''}`).all(...fA)
+    .filter((x) => x.outstanding > 0);
+
   const recentTxns = db.prepare(`SELECT t.id, t.no, t.direction, t.amount, t.kind, t.category, t.pay_type, t.party, t.op_date, t.status,
       t.ref_no, a.name AS account_name, f.name AS facility_name, u.display_name AS user_name
     FROM txns t JOIN accounts a ON a.id=t.account_id JOIN facilities f ON f.id=t.facility_id JOIN users u ON u.id=t.user_id
@@ -111,7 +117,7 @@ r.get('/dashboard', (req, res) => {
     today: t,
     days_to_year_end: daysBetween(t, yearEnd),
     total_balance: facilities.reduce((s, f) => s + f.balance, 0),
-    day, ytd, debts, facilities,
+    day, ytd, debts, facilities, owed_total: owed.reduce((x, o) => x + o.outstanding, 0), owed,
     new_counts: {
       hall: count('hall_bookings', 'reg_date', 'hall'),
       field: count('field_bookings', 'reg_date', 'field'),

@@ -122,19 +122,34 @@ function facilityDetails(s) {
   return h + '</section>';
 }
 
+const DEBT_STATUS = { open: 'قائم', partial: 'مسدد جزئياً', settled: 'تم السداد ✔' };
+
+// الديون علينا: لمين، كم، ليش، وكل سداد مع سببه
 function fundingTable(fundings) {
-  return table(['الرقم', 'التاريخ', 'لصالح', 'وين وصل', 'المصدر / الجهة', 'النوع', 'المبلغ', 'المسدد', 'المتبقي'],
-    fundings.map((f) => [esc(f.no), f.op_date, esc(f.facility_name), esc(f.account_name), esc(f.source_account_name || f.party),
-      f.external ? 'خارجي' : 'من الاحتياطي', money(f.amount), money(f.repaid, 'in'), money(f.outstanding, 'debt')]),
-    { empty: 'لا يوجد تمويل قائم' });
+  if (!fundings.length) return '<p class="empty">لا توجد ديون على المنشأة</p>';
+  let h = table(['الرقم', 'التاريخ', 'المنشأة', 'لمين الدين', 'سبب الدين', 'وين وصل', 'المبلغ', 'تم سداده', 'المتبقي', 'الحالة'],
+    fundings.map((f) => [esc(f.no), f.op_date, esc(f.facility_name), `<b>${esc(f.party)}</b>`, esc(f.reason || f.notes || ''),
+      esc(f.account_name || 'لم يدخل الصندوق'), money(f.amount), money(f.repaid, 'in'), money(f.outstanding, 'debt'),
+      `<b class="${f.debt_status === 'settled' ? 'in' : 'debt'}">${DEBT_STATUS[f.debt_status]}</b>`]),
+    { foot: ['', '', '', '', '', 'الإجمالي', money(fundings.reduce((x, f) => x + f.amount, 0)), money(fundings.reduce((x, f) => x + f.repaid, 0), 'in'),
+      money(fundings.reduce((x, f) => x + f.outstanding, 0), 'debt'), ''] });
+  const pays = fundings.flatMap((f) => (f.payments || []).map((p) => ({ ...p, party: f.party, fno: f.no })));
+  if (pays.length) {
+    h += '<h4>دفعات السداد وسببها</h4>' + table(['الرقم', 'التاريخ', 'الدين', 'لمين', 'المبلغ', 'من وين طلع', 'سبب السداد', 'الموظف'],
+      pays.map((p) => [esc(p.no), p.op_date, esc(p.fno), esc(p.party), money(p.amount, 'out'), esc(p.account_name), esc(p.notes || ''), esc(p.user_name)]));
+  }
+  return h;
 }
 
 // ============ كشف منشأة واحدة (ملف مستقل تماماً) ============
 function facilityDoc(R, s) {
+  // الديون القائمة دائماً، والمسددة فقط إذا صار عليها شي في هذه الفترة
+  const debts = R.fundings.filter((f) => f.facility_id === s.facility.id
+    && (f.outstanding > 0 || f.op_date >= R.from || (f.payments || []).some((p) => p.op_date >= R.from)));
   return balanceBlock(s.totals.tin, s.totals.tout, s.closing, s.opening)
     + methodBlock(s.by_method, s.accounts)
     + facilityDetails(s)
-    + (R.fundings.some((f) => f.facility_id === s.facility.id) ? `<section><h2>التمويل لصالح المنشأة</h2>${fundingTable(R.fundings.filter((f) => f.facility_id === s.facility.id))}</section>` : '');
+    + (debts.length ? `<section><h2>ديون على ${esc(s.facility.name)}</h2>${fundingTable(debts)}</section>` : '');
 }
 
 // ============ الملخص الإجمالي (ملف مستقل) ============
@@ -156,11 +171,11 @@ function summaryDoc(R) {
     [...methods.values()].map((m) => [`<b>${esc(m.label)}</b>`, money(m.tin, 'in'), money(m.tout, 'out'), money(m.closing, 'bal')])) + '</section>';
   h += `<section class="details"><h2>التوضيح</h2>
     <div class="kpis small">${kpi('إيرادات تجارية', money(S.revenue, 'in'))}${kpi('مصروفات', money(S.expenses, 'out'))}${kpi('مرتجعات', money(S.refunds, 'out'))}
-    ${kpi('تمويل وارد', money(S.funding_in))}${kpi('سداد تمويل', money(S.funding_repay))}</div>
+    ${kpi('استلام ديون', money(S.funding_in))}${kpi('سداد ديون علينا', money(S.funding_repay))}</div>
     <h3>الديون والالتزامات (ليست في الصندوق)</h3>
     <div class="kpis small">${kpi('ديون الزبائن لنا', money(S.receivables, 'debt'))}${kpi('متبقٍ على الحجوزات', money(S.booking_remaining, 'debt'))}
-    ${kpi('تمويل خارجي علينا', money(S.funding_external, 'out'))}${kpi('صافي الأصول بعد الالتزامات', money(S.net_assets, 'bal'))}</div>
-    <p class="note">صافي الأصول = اللي ضل + ديون الزبائن − التمويل الخارجي غير المسدد.</p>`;
+    ${kpi('ديون علينا (لم تُسدد)', money(S.funding_external + S.funding_internal, 'out'))}${kpi('صافي الأصول بعد الالتزامات', money(S.net_assets, 'bal'))}</div>
+    <p class="note">صافي الأصول = اللي ضل + ديون الزبائن لنا − الديون علينا اللي لسا ما انسددت.</p>`;
   for (const [c, label] of [[R.cumulative.month, 'تراكمي الشهر'], [R.cumulative.year, 'تراكمي السنة']]) {
     h += `<h3>${label} (${c.from} — ${c.to})</h3>` + table(['المنشأة', 'انجمع', 'طلع'],
       c.rows.map((r) => [esc(r.facility.name), money(r.totals.tin, 'in'), money(r.totals.tout, 'out')]),
@@ -170,7 +185,7 @@ function summaryDoc(R) {
     h += `<h3>كل يوم لحاله</h3>` + table(['التاريخ', 'انجمع', 'طلع', 'الصافي'],
       R.days.map((d) => [d.date, money(d.tin, 'in'), money(d.tout, 'out'), money(d.tin - d.tout)]));
   }
-  if (R.fundings.length) h += `<h3>التمويل</h3>${fundingTable(R.fundings)}`;
+  if (R.fundings.length) h += `<h3>الديون على المنشآت</h3>${fundingTable(R.fundings)}`;
   return h + '</section>';
 }
 
@@ -198,7 +213,7 @@ function statementDoc(R) {
         money(o.price), money(o.paid, 'in'), money(o.remaining, 'debt')]), { foot: ['الإجمالي', '', '', '', '', '', money(R.receivables, 'debt')] });
   }
   if (R.booking_remaining) h += `<p class="note">متبقٍ على الحجوزات القائمة (يُدفع لاحقاً): <b>${fmt(R.booking_remaining)}</b></p>`;
-  if (R.fundings.length) h += `<h3>التمويل</h3>${fundingTable(R.fundings)}`;
+  if (R.fundings.length) h += `<h3>الديون علينا</h3>${fundingTable(R.fundings)}`;
   return h + '</section>';
 }
 
@@ -239,6 +254,7 @@ h2{font-size:15px;background:#1f4e79;color:#fff;padding:5px 10px;border-radius:4
 h2 small{font-weight:400;opacity:.8}
 h3{font-size:13px;color:#1f4e79;border-bottom:1px solid #cdd8e4;margin:14px 0 6px;padding-bottom:2px}
 h4{font-size:12px;margin:10px 0 4px;color:#333}
+h2,h3,h4{break-after:avoid;page-break-after:avoid}
 section{margin-bottom:10px}
 .newdoc{page-break-before:always;break-before:page;margin-top:24px;border-top:4px dashed #cdd8e4;padding-top:16px}
 @media print{.newdoc{border-top:0;margin-top:0;padding-top:0}}

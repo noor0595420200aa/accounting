@@ -46,7 +46,7 @@ route(/^\/treasury$/, async () => {
     h('div', { class: 'page-head' }, h('h1', null, '💰 الخزن والحسابات'),
       isAdmin() ? h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => accountModal() }, '+ إضافة حساب / مكان حفظ'),
-        h('a', { class: 'btn sec', href: '#/fundings' }, 'التمويل والديون الخارجية'),
+        h('a', { class: 'btn sec', href: '#/fundings' }, 'الديون علينا'),
         h('a', { class: 'btn sec', href: '#/statement' }, 'كشف حساب شامل PDF')) : ''),
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } }, kpi('إجمالي أرصدة كل الخزن', money(total))),
     h('div', { class: 'grid g2' }, list.map((t) => h('div', { class: 'card' },
@@ -134,53 +134,85 @@ route(/^\/account\/(\d+)$/, async (id) => {
       { onRow: (i) => go(`#/txn/${s.rows[i].id}`), rowClass: (i) => (s.rows[i].status === 'cancelled' ? 'cancelled' : ''), empty: 'لا توجد عمليات' })));
 });
 
-// ---------- التمويل والديون الخارجية ----------
+// ---------- الديون علينا (لمين ندين) ----------
+const DEBT_ST = { open: ['partial', 'قائم'], partial: ['partial', 'مسدد جزئياً'], settled: ['paid', 'تم السداد ✔'], cancelled: ['cancelled', 'ملغي'] };
+
+function addDebtModal(presetFid) {
+  const facs = S.meta.facilities.filter((f) => f.kind !== 'general');
+  const facSel = sel('facility_id', facs.map((f) => [f.id, f.name]), presetFid);
+  const recv = sel('received', [['yes', 'نعم، استلمنا المبلغ'], ['no', 'لا — شراء أو خدمة بالدين']]);
+  const accBox = h('div');
+  const setAcc = () => {
+    accBox.innerHTML = '';
+    if (recv.value === 'yes') accBox.append(field('وين وصل المبلغ', accountSel(facSel.value), { req: true }));
+  };
+  facSel.onchange = setAcc;
+  recv.onchange = setAcc;
+  setAcc();
+  modal('تسجيل دين على منشأة', [
+    h('p', { class: 'hint' }, 'الدين يبقى ظاهراً على المنشأة حتى يُسدد بالكامل، ولا يُخصم تلقائياً من أي حساب.'),
+    field('الدين على', facSel, { req: true }),
+    field('لمين الدين (اسم الشخص أو الجهة)', inp('party', { required: true }), { req: true }),
+    h('div', { class: 'grid g2' }, field('المبلغ', moneyInp('amount', { required: true }), { req: true }), field('التاريخ', dateInp('op_date'))),
+    field('سبب الدين', area('reason'), { req: true }),
+    field('هل استلمنا المبلغ كمصاري؟', recv), accBox,
+    field('ملاحظات', area('notes')),
+  ], async (d, idem) => {
+    const r = await api('POST', '/fundings', d, { idem });
+    closeModal(); toast(`تم تسجيل الدين برقم ${r.no}`, 'ok'); reload();
+  });
+}
+
+function repayDebtModal(f) {
+  modal(`سداد دين ${f.no} — ${f.party}`, [
+    h('p', null, 'المتبقي: ', money(f.outstanding, 'c-debt')),
+    field('المبلغ', moneyInp('amount', { value: major(f.outstanding), required: true }), { req: true }),
+    field('من وين طلع المبلغ', accountSel(f.facility_id), { req: true }),
+    field('التاريخ', dateInp('op_date')),
+    field('سبب / تفاصيل السداد', area('reason'), { req: true }),
+    h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'allow_negative' }), 'السماح حتى لو كان الرصيد غير كافٍ'),
+  ], async (d, idem) => {
+    const r = await api('POST', `/fundings/${f.id}/repay`, d, { idem });
+    closeModal(); toast(r.settled ? 'تم السداد بالكامل ✔' : `تم تسجيل السداد — المتبقي ${fmt(r.remaining)}`, 'ok'); reload();
+  }, { submitText: 'تسجيل السداد' });
+}
+
+// قائمة الديون علينا: كل دين مع سببه ودفعات سداده وأسبابها
+function debtsOwedList(rows) {
+  if (!rows.length) return h('div', { class: 'empty' }, 'لا توجد ديون علينا');
+  return h('div', null, rows.map((f) => {
+    const [cls, label] = DEBT_ST[f.status === 'cancelled' ? 'cancelled' : f.debt_status];
+    const pays = f.txns.filter((t) => t.kind === 'funding_repay');
+    return h('div', { class: 'card tight', style: { border: '1px solid var(--line)', boxShadow: 'none', opacity: f.status === 'cancelled' ? 0.6 : 1 } },
+      h('div', { class: 'row' }, noTag(f.no), h('b', null, `دين على ${f.facility_name} لصالح ${f.party}`), badge(cls, label), h('span', { class: 'sp' }),
+        isAdmin() && f.status === 'active' && f.outstanding > 0 ? h('button', { class: 'btn sm in', onclick: () => repayDebtModal(f) }, 'سداد') : '',
+        isAdmin() && f.status === 'active' ? h('button', { class: 'btn sm danger', onclick: () => modal(`إلغاء الدين ${f.no}`, [
+          h('p', { class: 'hint' }, 'للتصحيح فقط (دين مسجل بالغلط). يتم إلغاء الدين وكل حركاته مع الاحتفاظ بالسجل.'), field('سبب الإلغاء', area('reason'), { req: true })],
+        async (d, idem) => { await api('POST', `/fundings/${f.id}/cancel`, d, { idem }); closeModal(); reload(); }, { submitText: 'تأكيد الإلغاء', submitClass: 'out' }) }, 'إلغاء') : ''),
+      h('div', { class: 'grid g4 mt' },
+        h('div', null, h('div', { class: 'hint' }, 'المبلغ'), money(f.amount)),
+        h('div', null, h('div', { class: 'hint' }, 'تم سداده'), money(f.repaid, 'c-in')),
+        h('div', null, h('div', { class: 'hint' }, 'المتبقي'), money(f.outstanding, 'c-debt')),
+        h('div', null, h('div', { class: 'hint' }, 'التاريخ'), f.op_date)),
+      h('p', null, h('b', null, 'سبب الدين: '), f.reason || f.notes || '—'),
+      h('p', { class: 'hint' }, f.account_name ? `وصل المبلغ إلى: ${f.account_name}` : 'لم يدخل الصندوق (شراء/خدمة بالدين)', ` · سجله ${f.user_name}`),
+      pays.length ? table(['الرقم', 'تاريخ السداد', 'المبلغ', 'من وين طلع', 'سبب السداد', 'الموظف'],
+        pays.map((t) => [noTag(t.no), t.op_date, money(t.amount, 'c-out'), t.account_name, t.status === 'cancelled' ? `ملغاة: ${t.cancel_reason}` : (t.notes || ''), t.user_name]),
+        { rowClass: (i) => (pays[i].status === 'cancelled' ? 'cancelled' : '') }) : h('p', { class: 'hint' }, 'لم يُسدد شيء بعد'),
+      f.status === 'cancelled' ? h('p', { class: 'c-out' }, `ملغي: ${f.cancel_reason}`) : '');
+  }));
+}
+
 route(/^\/fundings$/, async () => {
   const rows = await GET('/fundings');
   const live = rows.filter((f) => f.status === 'active');
-  const facs = S.meta.facilities;
-  const addModal = () => {
-    const facSel = sel('facility_id', facs.filter((f) => f.kind !== 'general').map((f) => [f.id, f.name]));
-    const accBox = h('div');
-    const setAcc = () => { accBox.innerHTML = ''; accBox.append(field('وين وصل المبلغ', accountSel(facSel.value), { req: true })); };
-    facSel.onchange = setAcc;
-    setAcc();
-    const srcSel = sel('source_account_id', [['', 'جهة خارجية (ليست من حسابات النظام)'], ...S.meta.all_accounts.map((a) => [a.id, `${a.name} — ${a.facility_name}`])],
-      (S.meta.all_accounts.find((a) => facs.find((f) => f.id === a.facility_id)?.kind === 'general') || {}).id);
-    modal('تسجيل تمويل / دين خارجي لصالح منشأة', [
-      h('p', { class: 'hint' }, 'التمويل يظهر منفصلاً عن الإيرادات التجارية، ويبقى التزاماً حتى يُسدد.'),
-      field('لصالح المنشأة', facSel, { req: true }), accBox,
-      field('مصدر التمويل', srcSel, { hint: 'اختر الحساب الاحتياطي إذا كان المال منه، وسيُخصم منه تلقائياً' }),
-      field('الجهة / اسم الممول', inp('party', { required: true }), { req: true }),
-      h('div', { class: 'grid g2' }, field('المبلغ', moneyInp('amount', { required: true }), { req: true }), field('التاريخ', dateInp('op_date'))),
-      field('ملاحظات', area('notes')),
-      h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'allow_negative' }), 'السماح حتى لو كان رصيد المصدر غير كافٍ'),
-    ], async (d, idem) => {
-      const r = await api('POST', '/fundings', d, { idem });
-      closeModal(); toast(`تم التسجيل برقم ${r.no}`, 'ok'); reload();
-    });
-  };
-  const repay = (f) => modal(`سداد التمويل ${f.no}`, [
-    h('p', null, 'المتبقي: ', money(f.outstanding, 'c-debt')),
-    field('المبلغ', moneyInp('amount', { value: major(f.outstanding), required: true }), { req: true }),
-    field('من وين يطلع السداد', accountSel(f.facility_id), { req: true }),
-    field('التاريخ', dateInp('op_date')), field('ملاحظات', area('notes')),
-    h('label', { class: 'chk' }, h('input', { type: 'checkbox', name: 'allow_negative' }), 'السماح حتى لو كان الرصيد غير كافٍ'),
-  ], async (d, idem) => { await api('POST', `/fundings/${f.id}/repay`, d, { idem }); closeModal(); toast('تم تسجيل السداد', 'ok'); reload(); }, { submitText: 'تسجيل السداد' });
-  const cancel = (f) => modal(`إلغاء التمويل ${f.no}`, [h('p', { class: 'hint' }, 'سيتم إلغاء التمويل وكل حركاته مع الاحتفاظ بالسجل.'), field('سبب الإلغاء', area('reason'), { req: true })],
-    async (d, idem) => { await api('POST', `/fundings/${f.id}/cancel`, d, { idem }); closeModal(); reload(); }, { submitText: 'تأكيد الإلغاء', submitClass: 'out' });
+  const open = live.filter((f) => f.outstanding > 0);
   return h('div', null,
-    h('div', { class: 'page-head' }, h('h1', null, 'التمويل والديون الخارجية'), isAdmin() ? h('button', { class: 'btn', onclick: addModal }, '+ تسجيل تمويل') : ''),
+    h('div', { class: 'page-head' }, h('h1', null, 'الديون علينا'), isAdmin() ? h('button', { class: 'btn', onclick: () => addDebtModal() }, '+ تسجيل دين على منشأة') : ''),
     h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } },
-      kpi('تمويل خارجي غير مسدد', money(live.filter((f) => !f.source_account_id).reduce((s, f) => s + f.outstanding, 0)), 'out'),
-      kpi('تمويل من الاحتياطي غير مسدد', money(live.filter((f) => f.source_account_id).reduce((s, f) => s + f.outstanding, 0)), 'debt'),
-      kpi('إجمالي ما تم سداده', money(live.reduce((s, f) => s + f.repaid, 0)), 'in')),
-    h('div', { class: 'card' }, table(['الرقم', 'التاريخ', 'لصالح', 'الحساب المستلم', 'المصدر / الجهة', 'المبلغ', 'المسدد', 'المتبقي', 'الحالة', 'ملاحظات', ''],
-      rows.map((f) => [noTag(f.no), f.op_date, f.facility_name, f.account_name, f.source_account_name ? `${f.source_account_name} (${f.party})` : f.party,
-        money(f.amount), money(f.repaid, 'c-in'), money(f.outstanding, 'c-debt'),
-        f.status === 'cancelled' ? badge('cancelled', 'ملغي') : f.outstanding > 0 ? badge('partial', 'قائم') : badge('paid', 'مسدد'), f.notes || '',
-        isAdmin() && f.status === 'active' ? h('div', { class: 'row' },
-          f.outstanding > 0 ? h('button', { class: 'btn sm in', onclick: () => repay(f) }, 'سداد') : '',
-          h('button', { class: 'btn sm danger', onclick: () => cancel(f) }, 'إلغاء')) : '']),
-      { empty: 'لا يوجد تمويل مسجل', rowClass: (i) => (rows[i].status === 'cancelled' ? 'cancelled' : '') })));
+      kpi('ديون علينا لم تُسدد', money(open.reduce((x, f) => x + f.outstanding, 0)), 'out'),
+      kpi('عدد الديون القائمة', open.length, 'plain'),
+      kpi('إجمالي ما تم سداده', money(live.reduce((x, f) => x + f.repaid, 0)), 'in')),
+    h('div', { class: 'tabs' }, h('a', { href: '#/debts' }, 'ديون الزبائن لنا'), h('a', { href: '#/fundings', class: 'on' }, 'الديون علينا')),
+    debtsOwedList(rows));
 });

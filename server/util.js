@@ -153,7 +153,7 @@ const LABELS = {
   },
   kind: {
     payment: 'دفعة', income: 'إيداع', expense: 'مصروف', refund: 'مرتجع',
-    funding: 'تمويل وارد', funding_out: 'تمويل صادر', funding_repay: 'سداد تمويل', funding_repay_in: 'استرداد تمويل',
+    funding: 'استلام دين', funding_out: 'تمويل صادر', funding_repay: 'سداد دين علينا', funding_repay_in: 'استرداد تمويل',
   },
   accountType: {
     safe: 'كاش (خزنة)', employee: 'كاش مع موظف', palpay: 'بال باي', jawwalpay: 'جوال باي', bank: 'حساب بنكي', reserve: 'حساب احتياطي', other: 'أخرى',
