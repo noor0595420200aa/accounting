@@ -5,6 +5,8 @@
 
 ## التشغيل
 
+**للتنصيب على سيرفر حقيقي راجع [DEPLOY.md](DEPLOY.md).**
+
 ```bash
 npm install
 npm start            # http://localhost:3000
