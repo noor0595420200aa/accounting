@@ -1,0 +1,18 @@
+# نشر بضغطة واحدة على Render.com (يحتاج خطة مدفوعة بسبب القرص الدائم لقاعدة البيانات)
+services:
+  - type: web
+    name: accounting
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: TZ_APP
+        value: Asia/Hebron
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

@@ -1,0 +1,34 @@
+# تشغيل النظام على أي سيرفر عليه Docker:
+#   cp .env.example .env   ثم عدّل القيم
+#   docker compose up -d
+services:
+  app:
+    build: .
+    restart: always
+    environment:
+      APP_SECRET: ${APP_SECRET}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      TZ_APP: ${TZ_APP:-Asia/Hebron}
+    volumes:
+      - app-data:/data          # قاعدة البيانات والتقارير والنسخ الاحتياطية
+    expose:
+      - "3000"
+
+  # Caddy: يفتح الموقع على المنفذ 80/443 ويصدر شهادة HTTPS تلقائياً إذا وضعت دومين
+  caddy:
+    image: caddy:2
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy reverse-proxy --from ${DOMAIN:-:80} --to app:3000
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:
