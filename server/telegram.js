@@ -5,15 +5,19 @@ const { getSetting, decrypt } = require('./util');
 const API = () => process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
 
 /**
- * المستلمون: كل مستخدم فعّال (مدير أو مشاهد/مالك) أُدخل له رقم تيليجرام،
- * بالإضافة لمجموعة اختيارية من الإعدادات. التقارير تصل للجميع معاً.
+ * المستلمون: كل مستخدم فعّال (مدير أو مشاهد/مالك) له رقم تيليجرام، حسب ما اختار أن يصله:
+ * kind = daily | weekly | monthly | notify (رسالة لكل عملية) | manual (كل من له رقم)
+ * المجموعة الاختيارية من الإعدادات تستلم التقارير التلقائية واليدوية (بدون رسائل العمليات).
  */
-function recipients() {
-  const list = db.prepare(`SELECT display_name, role, telegram_chat_id FROM users
-    WHERE active=1 AND role IN ('admin','viewer') AND telegram_chat_id IS NOT NULL AND TRIM(telegram_chat_id)<>'' ORDER BY id`).all()
-    .map((u) => ({ id: u.telegram_chat_id.trim(), name: u.display_name }));
+const KIND_COL = { daily: 'tg_daily', weekly: 'tg_weekly', monthly: 'tg_monthly', notify: 'tg_notify' };
+function recipients(kind = 'manual') {
+  const col = KIND_COL[kind];
+  const list = db.prepare(`SELECT id AS user_id, display_name, role, telegram_chat_id FROM users
+    WHERE active=1 AND role IN ('admin','viewer') AND telegram_chat_id IS NOT NULL AND TRIM(telegram_chat_id)<>''
+    ${col ? `AND ${col}=1` : ''} ORDER BY id`).all()
+    .map((u) => ({ id: u.telegram_chat_id.trim(), name: u.display_name, user_id: u.user_id }));
   const group = (getSetting('telegram_chat_id') || '').trim();
-  if (group) list.push({ id: group, name: 'المجموعة' });
+  if (group && kind !== 'notify') list.push({ id: group, name: 'المجموعة' });
   const seen = new Set();
   return list.filter((r) => (seen.has(r.id) ? false : seen.add(r.id)));
 }
@@ -22,7 +26,7 @@ function config() {
   return {
     enabled: getSetting('telegram_enabled') === '1',
     token: decrypt(getSetting('telegram_token_enc') || ''),
-    recipients: recipients(),
+    recipients: recipients('manual'),
   };
 }
 

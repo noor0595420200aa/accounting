@@ -77,7 +77,7 @@ function refMoney(refType, refId) {
 }
 
 function refTxns(refType, refId) {
-  return db.prepare(`SELECT t.*, a.name AS account_name, u.display_name AS user_name,
+  return db.prepare(`SELECT t.*, a.label AS account_name, u.display_name AS user_name,
       cu.display_name AS cancelled_by_name
     FROM txns t JOIN accounts a ON a.id=t.account_id JOIN users u ON u.id=t.user_id
     LEFT JOIN users cu ON cu.id=t.cancelled_by

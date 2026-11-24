@@ -50,17 +50,18 @@ function balanceBlock(tin, tout, closing, opening) {
   </div>${opening ? `<p class="note">اللي ضل يشمل رصيداً سابقاً من قبل هذه الفترة بقيمة ${fmt(opening)}.</p>` : ''}</section>`;
 }
 
-// ============ 2) وين المصاري: حسب طريقة الدفع ============
+// ============ 2) وين المصاري: كل حساب دفع لحاله (كم دخل، كم خرج، كم ضايل) ============
 function methodBlock(methods, accounts) {
-  let h = `<section><h2>وين وصلت المصاري</h2>` + table(['الطريقة', 'انجمع', 'طلع', 'ضل'],
-    methods.map((m) => [`<b>${esc(m.label)}</b>`, money(m.tin, 'in'), money(m.tout, 'out'), money(m.closing, 'bal')]),
-    { foot: ['الإجمالي', money(methods.reduce((s, m) => s + m.tin, 0), 'in'), money(methods.reduce((s, m) => s + m.tout, 0), 'out'),
-      money(methods.reduce((s, m) => s + m.closing, 0), 'bal')] });
-  // إذا كان أكثر من حساب لنفس الطريقة (مثلاً كاش في الخزنة وكاش مع موظف) نوضح كل حساب
   const shown = accounts.filter((a) => a.active || a.closing || a.tin || a.tout);
-  if (shown.length > methods.length) {
-    h += `<h4>تفصيل الحسابات</h4>` + table(['الحساب', 'النوع', 'انجمع', 'طلع', 'ضل'],
-      shown.map((a) => [esc(a.name) + (a.phone ? ` <small>(${esc(a.phone)})</small>` : ''), esc(a.type_label), money(a.tin || 0, 'in'), money(a.tout || 0, 'out'), money(a.closing, 'bal')]));
+  let h = `<section><h2>حسابات الدفع — وين وصلت المصاري</h2>` + table(['الحساب', 'النوع', 'دخل عليه', 'خرج منه', 'ضايل فيه'],
+    shown.map((a) => [`<b>${esc(a.label || a.name)}</b>${a.phone ? ` <small>(${esc(a.phone)})</small>` : ''}${a.active ? '' : ' <small>(معطل)</small>'}`,
+      esc(a.type_label), money(a.tin || 0, 'in'), money(a.tout || 0, 'out'), money(a.closing, 'bal')]),
+    { foot: ['الإجمالي', '', money(shown.reduce((s, a) => s + (a.tin || 0), 0), 'in'), money(shown.reduce((s, a) => s + (a.tout || 0), 0), 'out'),
+      money(shown.reduce((s, a) => s + a.closing, 0), 'bal')] });
+  // إذا في أكثر من حساب لنفس الطريقة (مثلاً كاش مع موظف، أو أكثر من بنك) نجمعهم حسب الطريقة
+  if (methods.some((x) => x.accounts > 1)) {
+    h += `<h4>المجموع حسب الطريقة</h4>` + table(['الطريقة', 'دخل', 'خرج', 'ضايل'],
+      methods.map((x) => [`<b>${esc(x.label)}</b>`, money(x.tin, 'in'), money(x.tout, 'out'), money(x.closing, 'bal')]));
   }
   return h + '</section>';
 }

@@ -3,7 +3,7 @@ const { db } = require('../db');
 const { bad, today, addDays, isDate, daysBetween, LABELS, methodOf, METHOD_ORDER } = require('../util');
 const L = require('../ledger');
 
-const TXN_SELECT = `SELECT t.*, a.name AS account_name, a.type AS account_type, f.name AS facility_name,
+const TXN_SELECT = `SELECT t.*, a.label AS account_name, a.type AS account_type, f.name AS facility_name,
     u.display_name AS user_name, cu.display_name AS cancelled_by_name
   FROM txns t JOIN accounts a ON a.id=t.account_id JOIN facilities f ON f.id=t.facility_id
   JOIN users u ON u.id=t.user_id LEFT JOIN users cu ON cu.id=t.cancelled_by`;
@@ -126,7 +126,7 @@ function bookingRemainingAsOf(refType, tbl, fid, to) {
 }
 
 function fundingsAsOf(to, fid = null) {
-  const rows = db.prepare(`SELECT fu.*, f.name AS facility_name, a.name AS account_name, sa.name AS source_account_name,
+  const rows = db.prepare(`SELECT fu.*, f.name AS facility_name, a.label AS account_name, sa.name AS source_account_name,
       u.display_name AS user_name
     FROM fundings fu JOIN facilities f ON f.id=fu.facility_id LEFT JOIN accounts a ON a.id=fu.account_id
     LEFT JOIN accounts sa ON sa.id=fu.source_account_id JOIN users u ON u.id=fu.created_by
@@ -138,7 +138,7 @@ function fundingsAsOf(to, fid = null) {
     f.outstanding = f.amount - f.repaid;
     f.external = !f.source_account_id;
     f.debt_status = f.outstanding <= 0 ? 'settled' : f.repaid > 0 ? 'partial' : 'open';
-    f.payments = db.prepare(`SELECT t.no, t.op_date, t.amount, t.notes, a.name AS account_name, u.display_name AS user_name
+    f.payments = db.prepare(`SELECT t.no, t.op_date, t.amount, t.notes, a.label AS account_name, u.display_name AS user_name
       FROM txns t JOIN accounts a ON a.id=t.account_id JOIN users u ON u.id=t.user_id
       WHERE t.ref_type='funding' AND t.ref_id=? AND t.kind='funding_repay' AND t.status='active' AND t.op_date<=? ORDER BY t.op_date, t.id`).all(f.id, to);
   }
@@ -393,6 +393,10 @@ function buildStatement(q = {}) {
   const rows = ids.length ? enrich(db.prepare(`${TXN_SELECT} WHERE t.account_id IN (${ids.map(() => '?').join(',')})
       AND t.op_date>=? AND t.op_date<=? ${q.user_id ? 'AND t.user_id=?' : ''} ORDER BY t.op_date, t.id`)
     .all(...ids, from, to, ...(q.user_id ? [Number(q.user_id)] : []))) : [];
+  for (const a of accounts) {
+    a.tin = rows.filter((t) => t.status === 'active' && t.account_id === a.id && t.direction === 'in').reduce((x, t) => x + t.amount, 0);
+    a.tout = rows.filter((t) => t.status === 'active' && t.account_id === a.id && t.direction === 'out').reduce((x, t) => x + t.amount, 0);
+  }
   const opening = accounts.reduce((s, a) => s + a.opening, 0);
   let run = opening;
   for (const t of rows) {

@@ -6,6 +6,7 @@ const {
 } = require('../util');
 const { assertFacility, assertCanCancel } = require('../auth');
 const L = require('../ledger');
+const N = require('../notify');
 
 const r = express.Router();
 const fieldId = () => {
@@ -143,6 +144,15 @@ r.post('/bookings', (req, res) => {
     });
     markStale([d.reg_date]);
     recompute(id);
+    N.queue(req.user, { icon: '⚽', title: 'حجز ملعب جديد', no, facilityId: fid, lines: [
+      `👤 الاسم: ${d.customer_name}${d.phone ? ` · 📞 ${d.phone}` : ''}`,
+      `📅 موعد اللعب: ${d.play_date} من ${d.start_time} إلى ${d.end_time} (${d.minutes / 60} ساعة)`,
+      `💰 السعر: ${N.m(d.total)}`,
+      `✅ ${deposit >= d.total ? 'دفع كامل' : 'العربون'}: ${N.m(deposit)} ← ${N.accLabel(B.account_id)}`,
+      `⏳ المتبقي: ${N.m(d.total - deposit)}`,
+      d.reg_date !== today() ? `🗂 تاريخ التسجيل: ${d.reg_date} (إدخال قديم)` : null,
+      d.notes ? `📝 ${d.notes}` : null,
+    ] });
     return { id, no };
   })();
   res.json(out);
@@ -168,6 +178,7 @@ r.put('/bookings/:id', (req, res) => {
     const changes = {};
     for (const k of Object.keys(d)) if (d[k] !== b[k]) changes[k] = { from: b[k], to: d[k] };
     audit(req.user, 'update', 'field_booking', id, { facilityId: b.facility_id, refNo: b.no, summary: 'تعديل بيانات الحجز', details: changes });
+    if (Object.keys(changes).length) N.queue(req.user, { icon: '✏️', title: 'تعديل حجز ملعب', no: b.no, facilityId: b.facility_id, lines: [`👤 ${d.customer_name}`, ...N.changesLines(changes)] });
     markStale([b.reg_date, d.reg_date]);
     recompute(id);
   })();
@@ -193,6 +204,12 @@ r.post('/bookings/:id/payments', (req, res) => {
       notes: str(req.body.notes, 'ملاحظات'), opDate: reqDate(req.body.op_date, 'تاريخ الدفعة', today()),
     });
     recompute(id);
+    N.queue(req.user, { icon: '💵', title: 'دفعة على حجز ملعب', no: t.no, facilityId: b.facility_id, lines: [
+      `🔖 الحجز: #${b.no} — ${b.customer_name}`,
+      `🏷 النوع: ${LABELS.payType[t.pay_type]}`,
+      `💵 المبلغ: ${N.m(amount)} ← ${N.accLabel(t.account_id)}`,
+      `⏳ المتبقي: ${remaining - amount > 0 ? N.m(remaining - amount) : 'لا شيء — مكتمل الدفع ✔'}`,
+    ] });
     return { ok: true, no: t.no };
   })();
   res.json(out);
@@ -217,6 +234,11 @@ r.post('/bookings/:id/cancel', (req, res) => {
       details: { original: b },
     });
     markStale([b.reg_date]);
+    N.queue(req.user, { icon: '❌', title: 'إلغاء حجز ملعب', no: b.no, facilityId: b.facility_id, lines: [
+      `👤 الاسم: ${b.customer_name}`,
+      `💸 المبلغ المدفوع: ${LABELS.cancelAction[money.action]}${money.refund ? ` — تم إرجاع ${N.m(money.refund)} من ${N.accLabel(req.body.refund_account_id)}` : ''}`,
+      `❓ السبب: ${reason}`,
+    ] });
     return { ok: true, ...money };
   })();
   res.json(out);

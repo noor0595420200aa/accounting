@@ -37,6 +37,14 @@ async function tick() {
     if (String(now.weekday) === String(getSetting('weekly_report_day') ?? '6') && now.time >= (getSetting('weekly_report_time') || '00:15')) {
       await autoReport('weekly', addDays(yesterday, -6), yesterday, { preset: 'last7', date: yesterday });
     }
+    // الجرد الشهري عن الشهر الماضي (أول أيام الشهر)
+    const day = Number(now.date.slice(8, 10));
+    if (day <= 3 && (day > 1 || now.time >= (getSetting('monthly_report_time') || '00:30'))) {
+      const [y, m] = now.date.slice(0, 7).split('-').map(Number);
+      const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
+      const last = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10);
+      await autoReport('monthly', `${prev}-01`, last, { preset: 'month', month: prev });
+    }
     // إعادة محاولة إرسال التقارير التلقائية الفاشلة (حتى 3 مرات، كل 15 دقيقة)
     if (telegram.config().enabled) {
       const cutoff = new Date(Date.now() - 15 * 60000).toISOString();
@@ -56,9 +64,45 @@ async function tick() {
   }
 }
 
+// إرسال رسائل العمليات الفورية لمن اختار استلامها
+let flushing = false;
+async function flushNotifications() {
+  if (flushing) return;
+  flushing = true;
+  try {
+    const pending = db.prepare("SELECT * FROM notifications WHERE status='pending' ORDER BY id LIMIT 20").all();
+    if (!pending.length) return;
+    const cfg = telegram.config();
+    const recips = telegram.recipients('notify');
+    if (!cfg.enabled || !cfg.token || !recips.length) {
+      db.prepare("UPDATE notifications SET status='skipped' WHERE status='pending'").run();
+      return;
+    }
+    for (const n of pending) {
+      const res = await telegram.sendText(n.text, recips).catch((e) => ({ ok: [], failed: [{ name: 'الكل', error: e.message }] }));
+      if (!res.failed.length) {
+        db.prepare("UPDATE notifications SET status='sent', sent_at=? WHERE id=?").run(nowISO(), n.id);
+      } else {
+        const tries = n.attempts + 1;
+        const err = res.failed.map((f) => `${f.name}: ${f.error}`).join(' | ');
+        // من استلم لا نكرر له: إذا وصلت لأحد نعتبرها مرسلة ونسجل الخطأ
+        const status = res.ok.length ? 'sent' : tries >= 5 ? 'failed' : 'pending';
+        db.prepare('UPDATE notifications SET status=?, attempts=?, error=? WHERE id=?').run(status, tries, err, n.id);
+        if (status === 'failed') addAlert('telegram_failed', `تعذر إرسال رسالة عملية عبر تيليجرام: ${err}`);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error('notify', e);
+  } finally {
+    flushing = false;
+  }
+}
+
 function start() {
   setTimeout(tick, 5000);
+  setInterval(flushNotifications, 4000);
   return setInterval(tick, 30000);
 }
 
-module.exports = { start, tick };
+module.exports = { start, tick, flushNotifications, autoReport };

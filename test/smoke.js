@@ -181,6 +181,15 @@ async function fail(who, method, url, body, re) {
 
   // ---- حساب موظف + تمويل من الحساب الاحتياطي ----
   await ok('admin', 'POST', '/accounts', { facility_id: F.hall.id, name: 'أسامة', type: 'employee', phone: '0599000000', opening_balance: 0 });
+  // حساب دفع يضيفه المدير: بنك فلسطين — فلان
+  const bank = await ok('admin', 'POST', '/accounts', { facility_id: F.hall.id, name: 'بنك فلسطين', holder: 'فلان', type: 'bank', opening_balance: 0 });
+  await ok('hall', 'POST', '/txns/income', { facility_id: F.hall.id, account_id: bank.id, amount: 700, category: 'أخرى', party: 'تحويل' });
+  await ok('hall', 'POST', '/txns/expense', { facility_id: F.hall.id, account_id: bank.id, amount: 200, category: 'صيانة', party: 'فني' });
+  const inv = await ok('owner', 'GET', `/accounts-summary?from=${T}&to=${T}`);
+  const bk = inv.rows.find((a) => a.id === bank.id);
+  assert.strictEqual(bk.label, 'بنك فلسطين — فلان');
+  assert.deepStrictEqual([bk.tin, bk.tout, bk.closing], [70000, 20000, 50000]);
+  assert.ok((await ok('hall', 'GET', '/meta')).facilities[0].accounts.some((a) => a.name === 'بنك فلسطين — فلان'));
   const general = meta.facilities.find((f) => f.kind === 'general');
   await ok('admin', 'PUT', `/accounts/${general.accounts[0].id}`, { opening_balance: 10000 });
   // موظف الصالة يسجل ديناً على قسمه فقط ويسدده، والإلغاء للمدير
@@ -207,6 +216,7 @@ async function fail(who, method, url, body, re) {
   const ext = await ok('admin', 'POST', '/fundings', { facility_id: F.hall.id, received: 'no', party: 'محل الكراسي', amount: 500, reason: 'شراء كراسي بالدين' });
   assert.strictEqual((await ok('admin', 'GET', `/treasury/${F.hall.id}`)).current, hallBefore);
   assert.strictEqual((await ok('admin', 'GET', '/dashboard')).owed_total, 50000);
+  step('payment accounts inventory (bank — holder: in 700 / out 200 / left 500)');
   step('employee account; debts owed by facility with reasons, repayments with reasons, status -> settled');
 
   // ---- التقارير ----
@@ -260,6 +270,35 @@ async function fail(who, method, url, body, re) {
     const again = await require('../server/reports/service').sendReport(gf.items[0].id);
     assert.strictEqual(again.already, true);
     assert.strictEqual(tgReceived.length, before);
+    // الإرسال اليدوي لشخص محدد فقط
+    const n0 = tgReceived.length;
+    const only = await ok('admin', 'POST', '/reports/generate', { kind: 'period', preset: 'month', facility_id: F.hall.id, send: true, recipients: ['222'] });
+    assert.deepStrictEqual(only.items[0].sent.sent_to, ['المالك']);
+    assert.ok(tgReceived.slice(n0).every((x) => x.chat === '222'));
+    // الاشتراكات: المالك يستلم الأسبوعي فقط
+    const owner = (await ok('admin', 'GET', '/admin/users')).find((u) => u.username === 'owner');
+    await ok('admin', 'PUT', `/admin/users/${owner.id}`, { tg_daily: false, tg_weekly: true, tg_monthly: false, tg_notify: false });
+    const sched0 = require('../server/scheduler');
+    const pm = addDays(`${T.slice(0, 7)}-01`, -1).slice(0, 7);
+    const n1 = tgReceived.length;
+    await sched0.autoReport('monthly', `${pm}-01`, addDays(`${T.slice(0, 7)}-01`, -1), { preset: 'month', month: pm });
+    const monthlyDocs = tgReceived.slice(n1).filter((x) => x.url.endsWith('/sendDocument'));
+    assert.ok(monthlyDocs.length >= 4 && monthlyDocs.every((x) => x.chat === '111'), 'monthly only to subscribers');
+    // رسائل العمليات الفورية: للمدير فقط (المالك غير مشترك)
+    const n2 = tgReceived.length;
+    const { db } = require('../server/db');
+    db.prepare("UPDATE notifications SET status='skipped' WHERE status='pending'").run();
+    await ok('hall', 'POST', '/txns/expense', { facility_id: F.hall.id, account_id: bank.id, amount: 10, category: 'صيانة', party: 'كهربائي' });
+    await sched0.flushNotifications();
+    const msgs = tgReceived.slice(n2).filter((x) => x.url.endsWith('/sendMessage'));
+    assert.strictEqual(msgs.length, 1);
+    assert.strictEqual(msgs[0].chat, '111');
+    const note = db.prepare('SELECT * FROM notifications ORDER BY id DESC LIMIT 1').get();
+    assert.strictEqual(note.status, 'sent');
+    assert.match(note.text, /مصروف/);
+    assert.match(note.text, /بنك فلسطين — فلان/);
+    assert.match(note.text, /سجّلها: موظف الصالة/);
+    console.log('  sample message:\n' + note.text.split('\n').map((l) => '    ' + l).join('\n'));
     // المالك يستطيع إنشاء ملف PDF لكن لا يستطيع الإرسال
     const og = await ok('owner', 'POST', '/reports/generate', { kind: 'period', preset: 'day', facility_id: F.hall.id });
     assert.strictEqual(og.items.length, 1);

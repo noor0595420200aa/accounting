@@ -10,7 +10,7 @@ const r = express.Router();
 
 // ---------- المستخدمون ----------
 r.get('/users', (req, res) => {
-  res.json(db.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.facility_id, u.telegram_chat_id, u.active, u.created_at, f.name AS facility_name,
+  res.json(db.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.facility_id, u.telegram_chat_id, u.tg_daily, u.tg_weekly, u.tg_monthly, u.tg_notify, u.active, u.created_at, f.name AS facility_name,
       (SELECT MAX(created_at) FROM audit a WHERE a.user_id=u.id) AS last_activity
     FROM users u LEFT JOIN facilities f ON f.id=u.facility_id ORDER BY u.id`).all());
 });
@@ -24,6 +24,12 @@ function validateUser(B, isNew) {
     telegram_chat_id: str(B.telegram_chat_id, 'رقم تيليجرام', { max: 40 }),
     active: B.active === undefined ? 1 : (B.active ? 1 : 0),
   };
+  // شو يوصل هذا الشخص على تيليجرام
+  const flag = (k, def) => (B[k] === undefined || B[k] === null ? def : (B[k] === true || B[k] === 1 || B[k] === '1' || B[k] === 'on' ? 1 : 0));
+  d.tg_daily = flag('tg_daily', 1);
+  d.tg_weekly = flag('tg_weekly', 1);
+  d.tg_monthly = flag('tg_monthly', 1);
+  d.tg_notify = flag('tg_notify', d.role === 'admin' ? 1 : 0);
   if (!/^[\w.\-]+$/.test(d.username)) throw bad('اسم المستخدم: أحرف إنجليزية وأرقام فقط');
   if (d.role === 'staff' && !d.facility_id) throw bad('حدد القسم الذي يدخل إليه الموظف');
   if (d.role !== 'staff') d.facility_id = null;
@@ -38,8 +44,9 @@ function validateUser(B, isNew) {
 r.post('/users', (req, res) => {
   const d = validateUser(req.body || {}, true);
   if (db.prepare('SELECT id FROM users WHERE username=?').get(d.username)) throw bad('اسم المستخدم مستخدم مسبقاً');
-  const info = db.prepare(`INSERT INTO users (username, display_name, password_hash, role, facility_id, telegram_chat_id, active, must_change_password, created_at)
-    VALUES (?,?,?,?,?,?,?,1,?)`).run(d.username, d.display_name, bcrypt.hashSync(req.body.password, 10), d.role, d.facility_id, d.telegram_chat_id, d.active, nowISO());
+  const info = db.prepare(`INSERT INTO users (username, display_name, password_hash, role, facility_id, telegram_chat_id, tg_daily, tg_weekly, tg_monthly, tg_notify,
+    active, must_change_password, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)`).run(d.username, d.display_name, bcrypt.hashSync(req.body.password, 10), d.role,
+    d.facility_id, d.telegram_chat_id, d.tg_daily, d.tg_weekly, d.tg_monthly, d.tg_notify, d.active, nowISO());
   audit(req.user, 'create', 'user', info.lastInsertRowid, { summary: `إضافة مستخدم: ${d.display_name} (${d.username})` });
   res.json({ id: info.lastInsertRowid });
 });
@@ -50,8 +57,8 @@ r.put('/users/:id', (req, res) => {
   const d = validateUser({ ...u, ...req.body }, false);
   if (u.id === req.user.id && (d.role !== 'admin' || !d.active)) throw bad('لا يمكنك تعطيل حسابك أو إزالة صلاحية المدير عنه');
   if (db.prepare('SELECT id FROM users WHERE username=? AND id<>?').get(d.username, u.id)) throw bad('اسم المستخدم مستخدم مسبقاً');
-  db.prepare('UPDATE users SET username=?, display_name=?, role=?, facility_id=?, telegram_chat_id=?, active=? WHERE id=?')
-    .run(d.username, d.display_name, d.role, d.facility_id, d.telegram_chat_id, d.active, u.id);
+  db.prepare(`UPDATE users SET username=?, display_name=?, role=?, facility_id=?, telegram_chat_id=?, tg_daily=?, tg_weekly=?, tg_monthly=?, tg_notify=?,
+    active=? WHERE id=?`).run(d.username, d.display_name, d.role, d.facility_id, d.telegram_chat_id, d.tg_daily, d.tg_weekly, d.tg_monthly, d.tg_notify, d.active, u.id);
   if (req.body.password) {
     db.prepare('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?').run(bcrypt.hashSync(req.body.password, 10), u.id);
   }
@@ -82,7 +89,7 @@ r.get('/audit', (req, res) => {
 });
 
 // ---------- الإعدادات ----------
-const PUBLIC_KEYS = ['timezone', 'currency', 'daily_report_time', 'weekly_report_day', 'weekly_report_time', 'backup_time', 'backup_keep',
+const PUBLIC_KEYS = ['timezone', 'currency', 'daily_report_time', 'weekly_report_day', 'weekly_report_time', 'monthly_report_time', 'backup_time', 'backup_keep',
   'staff_can_cancel', 'field_open', 'field_close', 'field_hour_price', 'telegram_enabled', 'telegram_chat_id'];
 
 r.get('/settings', (req, res) => {
@@ -104,7 +111,7 @@ r.put('/settings', (req, res) => {
     set('timezone', B.timezone);
   }
   if (B.currency !== undefined) set('currency', str(B.currency, 'العملة', { max: 10 }) || '');
-  for (const k of ['daily_report_time', 'weekly_report_time', 'backup_time', 'field_open', 'field_close']) {
+  for (const k of ['daily_report_time', 'weekly_report_time', 'monthly_report_time', 'backup_time', 'field_open', 'field_close']) {
     if (B[k] !== undefined) { if (!TIME_RE.test(B[k])) throw bad(`وقت غير صحيح: ${k}`); set(k, B[k]); }
   }
   if (B.weekly_report_day !== undefined) {

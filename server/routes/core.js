@@ -37,12 +37,12 @@ r.get('/meta', (req, res) => {
   const facs = db.prepare('SELECT * FROM facilities WHERE active=1 ORDER BY sort').all()
     .filter((f) => admin || f.id === req.user.facility_id);
   for (const f of facs) {
-    f.accounts = db.prepare('SELECT id, name, type FROM accounts WHERE facility_id=? AND active=1 ORDER BY id').all(f.id);
+    f.accounts = db.prepare('SELECT id, label AS name, type, holder FROM accounts WHERE facility_id=? AND active=1 ORDER BY id').all(f.id);
     f.expense_categories = db.prepare("SELECT name FROM categories WHERE facility_id=? AND kind='expense' AND active=1 ORDER BY id").all(f.id).map((x) => x.name);
     f.income_categories = db.prepare("SELECT name FROM categories WHERE facility_id=? AND kind='income' AND active=1 ORDER BY id").all(f.id).map((x) => x.name);
   }
   const users = admin ? db.prepare('SELECT id, display_name, username FROM users ORDER BY id').all() : [];
-  const allAccounts = admin ? db.prepare(`SELECT a.id, a.name, a.facility_id, f.name AS facility_name FROM accounts a
+  const allAccounts = admin ? db.prepare(`SELECT a.id, a.label AS name, a.facility_id, f.name AS facility_name FROM accounts a
     JOIN facilities f ON f.id=a.facility_id WHERE a.active=1 ORDER BY f.sort, a.id`).all() : [];
   res.json({
     facilities: facs, users, all_accounts: allAccounts,
@@ -70,7 +70,7 @@ r.get('/dashboard', (req, res) => {
   const fA = fid ? [fid] : [];
 
   const facilities = db.prepare(`SELECT * FROM facilities WHERE active=1 ${fid ? 'AND id=?' : ''} ORDER BY sort`).all(...fA).map((f) => {
-    const accounts = db.prepare('SELECT id, name, type FROM accounts WHERE facility_id=? ORDER BY id').all(f.id);
+    const accounts = db.prepare('SELECT id, label AS name, type, holder FROM accounts WHERE facility_id=? ORDER BY id').all(f.id);
     for (const a of accounts) a.balance = L.accountBalance(a.id);
     const day = sumWhere('op_date=? AND facility_id=?', [t, f.id]);
     return { id: f.id, kind: f.kind, name: f.name, prefix: f.prefix, balance: accounts.reduce((s, a) => s + a.balance, 0), accounts, today: day };
@@ -99,7 +99,7 @@ r.get('/dashboard', (req, res) => {
     .filter((x) => x.outstanding > 0);
 
   const recentTxns = db.prepare(`SELECT t.id, t.no, t.direction, t.amount, t.kind, t.category, t.pay_type, t.party, t.op_date, t.status,
-      t.ref_no, a.name AS account_name, f.name AS facility_name, u.display_name AS user_name
+      t.ref_no, a.label AS account_name, f.name AS facility_name, u.display_name AS user_name
     FROM txns t JOIN accounts a ON a.id=t.account_id JOIN facilities f ON f.id=t.facility_id JOIN users u ON u.id=t.user_id
     ${fid ? 'WHERE t.facility_id=?' : ''} ORDER BY t.id DESC LIMIT 12`).all(...fA);
   const recentAudit = admin ? db.prepare(`SELECT a.*, u.display_name AS user_name FROM audit a LEFT JOIN users u ON u.id=a.user_id

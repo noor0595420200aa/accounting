@@ -370,6 +370,25 @@ function migrate() {
       db.prepare("UPDATE settings SET value='' WHERE key='telegram_chat_id'").run();
     }
   }
+  // حسابات الدفع: اسم صاحب الحساب + اسم للعرض مثل "بنك فلسطين — فلان"
+  const acols = db.prepare('PRAGMA table_xinfo(accounts)').all().map((c) => c.name);
+  if (!acols.includes('holder')) db.exec('ALTER TABLE accounts ADD COLUMN holder TEXT');
+  if (!acols.includes('label')) {
+    db.exec("ALTER TABLE accounts ADD COLUMN label TEXT GENERATED ALWAYS AS (name || CASE WHEN holder IS NOT NULL AND TRIM(holder)<>'' THEN ' — ' || holder ELSE '' END) VIRTUAL");
+  }
+  // اشتراكات تيليجرام لكل مستخدم: جرد يومي/أسبوعي/شهري + رسالة فورية لكل عملية
+  const ucols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  for (const [c, def] of [['tg_daily', 1], ['tg_weekly', 1], ['tg_monthly', 1], ['tg_notify', 0]]) {
+    if (!ucols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} INTEGER NOT NULL DEFAULT ${def}`);
+  }
+  if (!ucols.includes('tg_notify')) db.exec("UPDATE users SET tg_notify=1 WHERE role='admin'");
+  // طابور رسائل العمليات الفورية (تُكتب داخل نفس معاملة قاعدة البيانات وتُرسل بعدها)
+  db.exec(`CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY, text TEXT NOT NULL, facility_id INTEGER, created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, error TEXT, sent_at TEXT)`);
+  if (!db.prepare("SELECT 1 FROM settings WHERE key='monthly_report_time'").get()) {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('monthly_report_time', '00:30')").run();
+  }
   const rcols = db.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
   if (!rcols.includes('sent_to')) db.exec('ALTER TABLE reports ADD COLUMN sent_to TEXT');
   // جدول الديون: account_id يصبح اختيارياً + عمود السبب

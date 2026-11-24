@@ -4,10 +4,12 @@ const { db, nowISO } = require('../db');
 const { bad, HttpError, toMinor, str, reqDate, today, nextNo, audit, markStale, LABELS, fmt } = require('../util');
 const { assertFacility, assertCanCancel, isAdmin, seesAll } = require('../auth');
 const L = require('../ledger');
+const N = require('../notify');
+const S_LABEL = (t) => (t.pay_type ? require('../util').LABELS.payType[t.pay_type] : require('../util').LABELS.kind[t.kind]);
 
 const r = express.Router();
 
-const TXN_SELECT = `SELECT t.*, a.name AS account_name, a.type AS account_type, f.name AS facility_name, f.prefix,
+const TXN_SELECT = `SELECT t.*, a.label AS account_name, a.type AS account_type, f.name AS facility_name, f.prefix,
     u.display_name AS user_name, cu.display_name AS cancelled_by_name
   FROM txns t JOIN accounts a ON a.id=t.account_id JOIN facilities f ON f.id=t.facility_id
   JOIN users u ON u.id=t.user_id LEFT JOIN users cu ON cu.id=t.cancelled_by`;
@@ -68,6 +70,13 @@ r.post('/txns/income', (req, res) => {
       notes: str(B.notes, 'ملاحظات'), extra: str(B.extra, 'تفاصيل أخرى'),
       opDate: reqDate(B.op_date, 'تاريخ الإيداع', today()),
     });
+    N.queue(req.user, { icon: '🟢', title: 'إيداع', no: t.no, facilityId: fid, lines: [
+      `💵 المبلغ: ${N.m(amount)} ← ${N.accLabel(t.account_id)}`,
+      `🏷 النوع: ${t.category}`,
+      `👤 المصدر: ${t.party}`,
+      t.op_date !== today() ? `📅 بتاريخ: ${t.op_date}` : null,
+      t.notes ? `📝 ${t.notes}` : null,
+    ] });
     return { id: t.id, no: t.no };
   })();
   res.json(out);
@@ -89,6 +98,13 @@ r.post('/txns/expense', (req, res) => {
       notes: str(B.notes, 'ملاحظات'), extra: str(B.extra, 'تفاصيل أخرى'),
       opDate: reqDate(B.op_date, 'تاريخ المصروف', today()),
     });
+    N.queue(req.user, { icon: '🔴', title: 'مصروف', no: t.no, facilityId: fid, lines: [
+      `💸 المبلغ: ${N.m(amount)} من ${account.label}`,
+      `🏷 التصنيف: ${t.category}`,
+      `👤 لمين: ${t.party}`,
+      t.op_date !== today() ? `📅 بتاريخ: ${t.op_date}` : null,
+      [t.notes, t.extra].filter(Boolean).length ? `📝 ${[t.notes, t.extra].filter(Boolean).join(' | ')}` : null,
+    ] });
     return { id: t.id, no: t.no };
   })();
   res.json(out);
@@ -109,6 +125,12 @@ r.post('/txns/:id/cancel', (req, res) => {
       if (ref && ref.status === 'cancelled') throw bad('لا يمكن إلغاء دفعة لحجز/طلب ملغي');
     }
     L.cancelTxnRow(req.user, t, reason);
+    N.queue(req.user, { icon: '⚠️', title: 'إلغاء عملية مالية', no: t.no, facilityId: t.facility_id, lines: [
+      `🏷 ${S_LABEL(t)} — ${t.direction === 'in' ? 'دخل' : 'خرج'} ${N.m(t.amount)} (${N.accLabel(t.account_id)})`,
+      t.party ? `👤 ${t.party}` : null,
+      t.ref_no ? `🔖 المرجع: #${t.ref_no}` : null,
+      `❓ السبب: ${reason}`,
+    ] });
     if (t.ref_type === 'hall') require('./hall').recompute(t.ref_id);
     if (t.ref_type === 'field') require('./field').recompute(t.ref_id);
     if (t.ref_type === 'order') require('./laundry').recompute(t.ref_id);
@@ -135,8 +157,8 @@ r.post('/accounts', (req, res) => {
   const B = req.body || {};
   L.getFacility(Number(B.facility_id));
   const type = Object.keys(LABELS.accountType).includes(B.type) ? B.type : 'other';
-  const info = db.prepare(`INSERT INTO accounts (facility_id, name, type, phone, notes, opening_balance, opening_date, created_by, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(Number(B.facility_id), str(B.name, 'اسم الحساب', { required: true, max: 150 }), type,
+  const info = db.prepare(`INSERT INTO accounts (facility_id, name, holder, type, phone, notes, opening_balance, opening_date, created_by, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(Number(B.facility_id), str(B.name, 'اسم الحساب', { required: true, max: 150 }), str(B.holder, 'صاحب الحساب', { max: 150 }), type,
     str(B.phone, 'الهاتف', { max: 50 }), str(B.notes, 'ملاحظات'), toMinor(B.opening_balance, 'الرصيد الافتتاحي', { allowZero: true }),
     reqDate(B.opening_date, 'تاريخ الرصيد الافتتاحي', today()), req.user.id, nowISO());
   audit(req.user, 'create', 'account', info.lastInsertRowid, {
@@ -152,6 +174,7 @@ r.put('/accounts/:id', (req, res) => {
   const B = req.body || {};
   const d = {
     name: str(B.name ?? a.name, 'اسم الحساب', { required: true, max: 150 }),
+    holder: str(B.holder ?? a.holder, 'صاحب الحساب', { max: 150 }),
     type: Object.keys(LABELS.accountType).includes(B.type) ? B.type : a.type,
     phone: str(B.phone ?? a.phone, 'الهاتف', { max: 50 }),
     notes: str(B.notes ?? a.notes, 'ملاحظات'),
@@ -166,13 +189,40 @@ r.put('/accounts/:id', (req, res) => {
   if (!d.active && L.accountBalance(a.id) !== 0 && !B.confirm_deactivate) {
     throw bad('رصيد الحساب ليس صفراً. أكّد التعطيل للمتابعة (سيبقى رصيده ظاهراً في التقارير)');
   }
-  db.prepare('UPDATE accounts SET name=?, type=?, phone=?, notes=?, opening_balance=?, opening_date=?, active=? WHERE id=?')
-    .run(d.name, d.type, d.phone, d.notes, d.opening_balance, d.opening_date, d.active, a.id);
+  db.prepare('UPDATE accounts SET name=?, holder=?, type=?, phone=?, notes=?, opening_balance=?, opening_date=?, active=? WHERE id=?')
+    .run(d.name, d.holder, d.type, d.phone, d.notes, d.opening_balance, d.opening_date, d.active, a.id);
   const changes = {};
   for (const k of Object.keys(d)) if (d[k] !== a[k]) changes[k] = { from: a[k], to: d[k] };
   audit(req.user, 'update', 'account', a.id, { facilityId: a.facility_id, summary: `تعديل حساب: ${d.name}`, details: changes });
   if (changes.opening_balance || changes.opening_date) markStale([a.opening_date, d.opening_date]);
   res.json({ ok: true });
+});
+
+// جرد حسابات الدفع: لكل حساب كم دخل، كم خرج، كم ضايل — لأي فترة
+r.get('/accounts-summary', (req, res) => {
+  const { addDays } = require('../util');
+  const fid = scopeFacility(req.user, req.query.facility_id);
+  const from = req.query.from ? reqDate(req.query.from, 'من') : null;
+  const to = req.query.to ? reqDate(req.query.to, 'إلى') : null;
+  const accs = db.prepare(`SELECT a.*, f.name AS facility_name FROM accounts a JOIN facilities f ON f.id=a.facility_id
+    WHERE ${fid ? 'a.facility_id=?' : '1=1'} ORDER BY f.sort, a.id`).all(...(fid ? [fid] : []));
+  const where = ["status='active'"];
+  const args = [];
+  if (from) { where.push('op_date>=?'); args.push(from); }
+  if (to) { where.push('op_date<=?'); args.push(to); }
+  const sums = db.prepare(`SELECT account_id, direction, COALESCE(SUM(amount),0) s, COUNT(*) n FROM txns WHERE ${where.join(' AND ')}
+    GROUP BY account_id, direction`).all(...args);
+  const rows = accs.map((a) => {
+    const g = (d) => sums.find((x) => x.account_id === a.id && x.direction === d) || { s: 0, n: 0 };
+    return {
+      id: a.id, name: a.name, holder: a.holder, label: a.label, type: a.type, facility_id: a.facility_id, facility_name: a.facility_name,
+      phone: a.phone, active: a.active,
+      opening: from ? L.accountBalance(a.id, addDays(from, -1)) : a.opening_balance,
+      tin: g('in').s, tout: g('out').s, count: g('in').n + g('out').n,
+      closing: L.accountBalance(a.id, to),
+    };
+  }).filter((a) => a.active || a.tin || a.tout || a.closing);
+  res.json({ from, to, rows });
 });
 
 // كشف حساب لحساب واحد مع رصيد متحرك
@@ -267,7 +317,7 @@ function fundingRow(f) {
   return f;
 }
 
-const FUND_SELECT = `SELECT fu.*, f.name AS facility_name, a.name AS account_name, sa.name AS source_account_name, u.display_name AS user_name
+const FUND_SELECT = `SELECT fu.*, f.name AS facility_name, a.label AS account_name, sa.name AS source_account_name, u.display_name AS user_name
   FROM fundings fu JOIN facilities f ON f.id=fu.facility_id LEFT JOIN accounts a ON a.id=fu.account_id
   LEFT JOIN accounts sa ON sa.id=fu.source_account_id JOIN users u ON u.id=fu.created_by`;
 
@@ -307,6 +357,12 @@ r.post('/fundings', (req, res) => {
     } else {
       require('../util').markStale([opDate]);
     }
+    N.queue(req.user, { icon: '📌', title: 'دين جديد على المنشأة', no, facilityId: fid, lines: [
+      `👤 لمين: ${party}`,
+      `💰 المبلغ: ${N.m(amount)}`,
+      `❓ السبب: ${reason}`,
+      acc ? `📥 وصل المبلغ إلى: ${acc.label}` : '📥 لم يدخل الصندوق (شراء/خدمة بالدين)',
+    ] });
     return { id, no };
   })();
   res.json(out);
@@ -339,6 +395,12 @@ r.post('/fundings/:id/repay', (req, res) => {
       });
     }
     const left = f.outstanding - amount;
+    N.queue(req.user, { icon: '✅', title: 'سداد دين علينا', no: t.no, facilityId: f.facility_id, lines: [
+      `🔖 الدين: #${f.no} — لـ ${f.party}`,
+      `💸 المبلغ: ${N.m(amount)} من ${acc.label}`,
+      `❓ سبب السداد: ${reason}`,
+      left <= 0 ? '🟢 تم سداد الدين بالكامل ✔' : `⏳ المتبقي: ${N.m(left)}`,
+    ] });
     audit(req.user, 'update', 'funding', f.id, {
       facilityId: f.facility_id, refNo: f.no,
       summary: `سداد ${fmt(amount)} من دين ${f.party} — ${left <= 0 ? 'تم السداد بالكامل' : `المتبقي ${fmt(left)}`} — السبب: ${reason}`,
@@ -360,6 +422,7 @@ r.post('/fundings/:id/cancel', (req, res) => {
     }
     db.prepare("UPDATE fundings SET status='cancelled', cancel_reason=?, cancelled_by=?, cancelled_at=? WHERE id=?")
       .run(reason, req.user.id, nowISO(), f.id);
+    N.queue(req.user, { icon: '❌', title: 'إلغاء دين', no: f.no, facilityId: f.facility_id, lines: [`👤 ${f.party} — ${N.m(f.amount)}`, `❓ السبب: ${reason}`] });
     audit(req.user, 'cancel', 'funding', f.id, { facilityId: f.facility_id, refNo: f.no, summary: `إلغاء دين — ${reason}`, details: { original: f } });
   })();
   res.json({ ok: true });

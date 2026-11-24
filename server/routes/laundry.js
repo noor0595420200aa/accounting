@@ -4,6 +4,7 @@ const { db, nowISO } = require('../db');
 const { bad, HttpError, toMinor, str, reqDate, today, nextNo, audit, markStale, LABELS, fmt } = require('../util');
 const { assertFacility, assertCanCancel, isAdmin } = require('../auth');
 const L = require('../ledger');
+const N = require('../notify');
 
 const r = express.Router();
 const laundryId = () => {
@@ -109,7 +110,7 @@ r.get('/customers/:id', (req, res) => {
   if (!c) throw new HttpError(404, 'الزبون غير موجود');
   assertFacility(req.user, c.facility_id);
   c.orders = db.prepare(`${ORDER_SELECT} WHERE o.customer_id=? ORDER BY o.order_date DESC, o.id DESC`).all(c.id).map(withMoney);
-  c.payments = db.prepare(`SELECT t.*, a.name AS account_name, u.display_name AS user_name FROM txns t
+  c.payments = db.prepare(`SELECT t.*, a.label AS account_name, u.display_name AS user_name FROM txns t
     JOIN accounts a ON a.id=t.account_id JOIN users u ON u.id=t.user_id
     WHERE t.ref_type='order' AND t.ref_id IN (SELECT id FROM orders WHERE customer_id=?) ORDER BY t.op_date DESC, t.id DESC`).all(c.id);
   const active = c.orders.filter((o) => o.status !== 'cancelled');
@@ -183,6 +184,14 @@ r.post('/orders', (req, res) => {
     }
     markStale([orderDate]);
     recompute(id);
+    N.queue(req.user, { icon: '🚗', title: 'طلب مغسلة جديد', no, facilityId: fid, lines: [
+      `🧾 الخدمة: ${service.name}`,
+      `👤 الزبون: ${custName}`,
+      `💰 السعر: ${N.m(price)}`,
+      paidNow > 0 ? `✅ المدفوع: ${N.m(paidNow)} ← ${N.accLabel(B.account_id)}` : '✅ المدفوع: 0',
+      paidNow >= price ? '🟢 الحالة: مدفوع' : `🟠 الحالة: ${paidNow > 0 ? 'دفع جزئي' : 'غير مدفوع'} — دين على الزبون ${N.m(price - paidNow)}`,
+      B.notes ? `📝 ${B.notes}` : null,
+    ] });
     return { id, no, customer_id: customerId };
   })();
   res.json(out);
@@ -228,6 +237,13 @@ r.post('/orders/:id/payments', (req, res) => {
       notes: str(req.body.notes, 'ملاحظات'), opDate: reqDate(req.body.op_date, 'تاريخ الدفعة', today()),
     });
     recompute(id);
+    N.queue(req.user, { icon: '💵', title: 'دفعة على طلب مغسلة', no: t.no, facilityId: o.facility_id, lines: [
+      `🔖 الطلب: #${o.no} — ${o.service_name}`,
+      `👤 الزبون: ${t.party}`,
+      `🏷 النوع: ${LABELS.payType[payType]}`,
+      `💵 المبلغ: ${N.m(amount)} ← ${N.accLabel(t.account_id)}`,
+      `⏳ المتبقي: ${remaining - amount > 0 ? N.m(remaining - amount) : 'لا شيء — مدفوع ✔'}`,
+    ] });
     return { ok: true, no: t.no };
   })();
   res.json(out);
@@ -252,6 +268,11 @@ r.post('/orders/:id/cancel', (req, res) => {
       details: { original: o },
     });
     markStale([o.order_date]);
+    N.queue(req.user, { icon: '❌', title: 'إلغاء طلب مغسلة', no: o.no, facilityId: o.facility_id, lines: [
+      `🧾 ${o.service_name} — ${o.customer_name}`,
+      `💸 المبلغ المدفوع: ${LABELS.cancelAction[money.action]}${money.refund ? ` — تم إرجاع ${N.m(money.refund)}` : ''}`,
+      `❓ السبب: ${reason}`,
+    ] });
     return { ok: true, ...money };
   })();
   res.json(out);
@@ -304,6 +325,12 @@ r.post('/customers/:id/pay', (req, res) => {
       recompute(o.id);
       amount -= part;
     }
+    const paidNow = toMinor(req.body.amount, 'المبلغ');
+    N.queue(req.user, { icon: '💵', title: 'تسديد دين زبون', no: nos.join('، '), facilityId: c.facility_id, lines: [
+      `👤 الزبون: ${c.name}${c.tag ? ` - ${c.tag}` : ''}`,
+      `💵 المبلغ: ${N.m(paidNow)} ← ${N.accLabel(req.body.account_id)}`,
+      `⏳ الدين المتبقي عليه: ${debt - paidNow > 0 ? N.m(debt - paidNow) : 'لا شيء — سدد كامل الدين ✔'}`,
+    ] });
     return { ok: true, nos };
   })();
   res.json(out);

@@ -44,10 +44,18 @@ r.post('/generate', async (req, res) => {
   const items = [];
   for (const x of set) {
     const item = { id: x.id, title: x.title };
-    if (req.body.send) item.sent = await sendReport(x.id, req.user, x.data).catch((e) => ({ ok: false, error: e.message }));
+    if (req.body.send) {
+      item.sent = await sendReport(x.id, req.user, x.data, { force: true, to: req.body.recipients || null })
+        .catch((e) => ({ ok: false, error: e.message }));
+    }
     items.push(item);
   }
   res.json({ items });
+});
+
+r.get('/recipients', (req, res) => {
+  if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
+  res.json(require('../telegram').recipients('manual'));
 });
 
 r.get('/', (req, res) => {
@@ -75,14 +83,14 @@ r.get('/:id/pdf', (req, res) => {
 
 r.post('/:id/send', async (req, res) => {
   if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
-  res.json(await sendReport(Number(req.params.id), req.user, null, { force: true }));
+  res.json(await sendReport(Number(req.params.id), req.user, null, { force: true, to: (req.body && req.body.recipients) || null }));
 });
 
 r.post('/:id/regenerate', async (req, res) => {
   if (!isAdmin(req.user)) throw new HttpError(403, 'للمدير فقط');
   const { id } = await regenerate(Number(req.params.id), req.user);
   let sent = null;
-  if (req.body && req.body.send) sent = await sendReport(id, req.user, null, { force: true }).catch((e) => ({ ok: false, error: e.message }));
+  if (req.body && req.body.send) sent = await sendReport(id, req.user, null, { force: true, to: req.body.recipients || null }).catch((e) => ({ ok: false, error: e.message }));
   res.json({ id, sent });
 });
 

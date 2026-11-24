@@ -71,41 +71,49 @@ async function createReportSet({ kind, params, user = null, auto = false, type =
 function caption(r, data) {
   let c = `📊 ${r.title}`;
   if (data) {
-    let tin; let tout; let left; let methods;
+    let tin; let tout; let left; let lines = [];
+    const accLines = (accounts) => accounts.filter((a) => a.tin || a.tout || a.closing)
+      .map((a) => `• ${a.label || a.name}: دخل ${fmt(a.tin || 0)} | خرج ${fmt(a.tout || 0)} | ضايل ${fmt(a.closing)}`);
     if (data.type === 'statement') {
-      ({ tin, tout } = data.totals); left = data.closing; methods = data.by_method;
+      ({ tin, tout } = data.totals); left = data.closing; lines = accLines(data.accounts);
     } else if (data.part === 'summary') {
       const S = data.summary;
       tin = S.tin; tout = S.tout; left = S.balances;
-      const m = new Map();
-      for (const s of data.sections) for (const x of s.by_method) {
-        const y = m.get(x.method) || { label: x.label, closing: 0 };
-        y.closing += x.closing;
-        m.set(x.method, y);
-      }
-      methods = [...m.values()];
+      lines = data.sections.map((x) => `• ${x.facility.name}: دخل ${fmt(x.totals.tin)} | خرج ${fmt(x.totals.tout)} | ضايل ${fmt(x.closing)}`);
     } else if (data.sections && data.sections[0]) {
-      const s = data.sections[0];
-      tin = s.totals.tin; tout = s.totals.tout; left = s.closing; methods = s.by_method;
+      const x = data.sections[0];
+      tin = x.totals.tin; tout = x.totals.tout; left = x.closing; lines = accLines(x.accounts);
     }
     if (tin !== undefined) {
-      c += `\nانجمع: ${fmt(tin)} | طلع: ${fmt(tout)} | ضل: ${fmt(left)}`;
-      if (methods && methods.length) c += `\n${methods.map((m) => `${m.label} ${fmt(m.closing)}`).join(' · ')}`;
+      c += `\n━━━━━━━━━━━━\n🟢 دخل: ${fmt(tin)}\n🔴 خرج: ${fmt(tout)}\n💼 ضايل: ${fmt(left)}`;
+      if (lines.length) c += `\n━━━━━━━━━━━━\n${lines.join('\n')}`;
     }
   }
   if (r.stale) c += '\n⚠️ نسخة معدّلة بعد تسجيل عمليات متأخرة';
-  return c;
+  return c.slice(0, 1000);
 }
 
 /**
  * إرسال تقرير محفوظ عبر تيليجرام لكل المستلمين (المدير + المالك + المجموعة).
  * force=false: يرسل فقط لمن لم يستلمه بعد (إعادة المحاولة التلقائية). force=true: للجميع.
  */
-async function sendReport(id, user = null, data = null, { force = false } = {}) {
+const KIND_OF = { daily: 'daily', weekly: 'weekly', monthly: 'monthly' };
+
+async function sendReport(id, user = null, data = null, { force = false, to = null } = {}) {
   const r = db.prepare('SELECT * FROM reports WHERE id=?').get(id);
   if (!r) throw new HttpError(404, 'التقرير غير موجود');
   if (!fs.existsSync(filePath(id))) throw new HttpError(404, 'ملف التقرير غير موجود، أعد توليده');
-  const all = telegram.recipients();
+  // to: أرقام محددة يختارها المدير؛ وإلا حسب اشتراك كل شخص بنوع التقرير
+  let all = telegram.recipients(KIND_OF[r.type] || 'manual');
+  if (to) {
+    const everyone = telegram.recipients('manual');
+    all = everyone.filter((x) => to.map(String).includes(String(x.id)));
+    if (!all.length) throw new HttpError(400, 'اختر مستلماً واحداً على الأقل');
+  }
+  if (!all.length) {
+    db.prepare("UPDATE reports SET telegram_status='none' WHERE id=?").run(id);
+    return { ok: true, sent_to: [], none: true };
+  }
   const already = force ? [] : JSON.parse(r.sent_to || '[]');
   const target = all.filter((x) => !already.includes(x.id));
   if (all.length && !target.length) return { ok: true, sent_to: [], already: true };

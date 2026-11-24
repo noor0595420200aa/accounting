@@ -39,29 +39,78 @@ function methodTable(list) {
     { foot: ['الإجمالي', money(list.reduce((x, m) => x + m.tin, 0), 'c-in'), money(list.reduce((x, m) => x + m.tout, 0), 'c-out'), money(list.reduce((x, m) => x + m.balance, 0))] });
 }
 
+// فترات الجرد السريعة
+function quickRange(key) {
+  const t = today();
+  return {
+    day: { from: t, to: t, label: 'جرد اليوم' },
+    week: { from: addDays(t, -6), to: t, label: 'جرد آخر 7 أيام' },
+    month: { from: `${t.slice(0, 7)}-01`, to: t, label: 'جرد هذا الشهر' },
+    all: { from: '', to: '', label: 'من البداية حتى اليوم' },
+  }[key];
+}
+
+// جرد حسابات الدفع: كل حساب (كاش، بال باي، جوال باي، بنك فلسطين — فلان...) كم دخل، كم خرج، كم ضايل
+async function accountsInventory(box, range) {
+  const d = await GET(`/accounts-summary${qs({ from: range.from, to: range.to })}`);
+  const rows = d.rows;
+  box.innerHTML = '';
+  box.append(table(['الحساب', 'المنشأة', 'النوع', 'دخل عليه', 'خرج منه', 'ضايل فيه', 'عدد العمليات'],
+    rows.map((a) => [h('b', null, a.label), a.facility_name, S.L.accountType[a.type] || a.type,
+      money(a.tin, 'c-in'), money(a.tout, 'c-out'), money(a.closing), a.count]),
+    { onRow: (i) => go(`#/account/${rows[i].id}${qs({ from: range.from, to: range.to })}`), empty: 'لا توجد حسابات',
+      foot: ['الإجمالي', '', '', money(rows.reduce((x, a) => x + a.tin, 0), 'c-in'), money(rows.reduce((x, a) => x + a.tout, 0), 'c-out'),
+        money(rows.reduce((x, a) => x + a.closing, 0)), rows.reduce((x, a) => x + a.count, 0)] }));
+}
+
 route(/^\/treasury$/, async () => {
   const list = await GET('/treasury');
   const total = list.reduce((s, t) => s + t.current, 0);
+  const invBox = h('div');
+  const from = h('input', { type: 'date' });
+  const to = h('input', { type: 'date' });
+  const title = h('h2', { style: { margin: 0 } });
+  const btns = h('div', { class: 'actions' });
+  const run = async (key, custom) => {
+    const r = custom || quickRange(key);
+    title.textContent = `📋 جرد حسابات الدفع — ${r.label}`;
+    btns.querySelectorAll('.btn').forEach((b) => b.classList.toggle('sec', b.dataset.k !== key));
+    await accountsInventory(invBox, r);
+  };
+  for (const k of ['day', 'week', 'month', 'all']) {
+    btns.append(h('button', { class: 'btn sm sec', 'data-k': k, onclick: () => run(k) }, quickRange(k).label));
+  }
+  await run('day');
   return h('div', null,
     h('div', { class: 'page-head' }, h('h1', null, '💰 الخزن والحسابات'),
       seesAll() ? h('div', { class: 'actions' },
-        isAdmin() ? h('button', { class: 'btn', onclick: () => accountModal() }, '+ إضافة حساب / مكان حفظ') : '',
+        isAdmin() ? h('button', { class: 'btn', onclick: () => accountModal() }, '+ إضافة حساب دفع') : '',
         h('a', { class: 'btn sec', href: '#/fundings' }, 'الديون علينا'),
         h('a', { class: 'btn sec', href: '#/statement' }, 'كشف حساب شامل PDF')) : ''),
-    h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } }, kpi('إجمالي أرصدة كل الخزن', money(total))),
+    h('div', { class: 'grid g3 kpis', style: { marginBottom: '16px' } }, kpi('إجمالي أرصدة كل الخزن الآن', money(total))),
+    h('div', { class: 'card' }, title, h('div', { class: 'mt' }, btns),
+      h('form', { class: 'filters mt', onsubmit: (e) => {
+        e.preventDefault();
+        run('custom', { from: from.value, to: to.value, label: `من ${from.value || 'البداية'} إلى ${to.value || 'اليوم'}` });
+      } }, field('من', from), field('إلى', to), h('button', { class: 'btn' }, 'جرد فترة محددة')),
+      invBox,
+      h('p', { class: 'hint mt' }, 'اضغط على أي حساب لرؤية كل حركاته. "ضايل فيه" هو الرصيد الموجود في الحساب في نهاية الفترة.')),
     h('div', { class: 'grid g2' }, list.map((t) => h('div', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { style: { margin: 0 } }, `خزنة ${t.facility.name}`), h('span', { class: 'sp' }), noTag(t.facility.prefix)),
       h('div', { class: 'grid g3 kpis big mt' },
         kpi('إجمالي اللي انجمع', money(t.total_in), 'in'), kpi('إجمالي اللي طلع', money(t.total_out), 'out'), kpi('اللي ضل', money(t.current))),
-      h('h3', { class: 'mt' }, 'وين المصاري'),
-      methodTable(t.by_method),
+      h('h3', { class: 'mt' }, 'حسابات الدفع'),
+      table(['الحساب', 'دخل', 'خرج', 'ضايل'], t.accounts.filter((a) => a.active || a.balance).map((a) => [h('b', null, a.label || a.name),
+        money(a.tin, 'c-in'), money(a.tout, 'c-out'), money(a.balance)]), { onRow: (i) => go(`#/account/${t.accounts.filter((a) => a.active || a.balance)[i].id}`) }),
       h('div', { class: 'actions mt' }, h('a', { class: 'btn sec', href: `#/treasury/${t.facility.id}` }, 'صفحة الخزنة وكشفها'))))));
 });
 
 function accountModal(a = null) {
   const facs = S.meta.facilities;
-  modal(a ? `تعديل حساب: ${a.name}` : 'إضافة حساب / مكان حفظ واستلام الأموال', [
-    field('اسم الحساب أو الشخص', inp('name', { required: true, value: a?.name }), { req: true, hint: 'مثال: الحساب البنكي، خزنة المكتب، أسامة' }),
+  modal(a ? `تعديل حساب: ${a.label || a.name}` : 'إضافة حساب دفع / مكان استلام الأموال', [
+    h('div', { class: 'grid g2' },
+      field('اسم الحساب', inp('name', { required: true, value: a?.name }), { req: true, hint: 'مثال: بنك فلسطين، بال باي، كاش المكتب' }),
+      field('اسم صاحب الحساب (اختياري)', inp('holder', { value: a?.holder }), { hint: 'يظهر هكذا: بنك فلسطين — فلان' })),
     h('div', { class: 'grid g2' },
       field('المنشأة التابع لها', a ? h('input', { value: facs.find((f) => f.id === a.facility_id)?.name || '', disabled: true }) : sel('facility_id', facs.map((f) => [f.id, f.name]))),
       field('نوع الحساب', sel('type', Object.entries(S.L.accountType), a?.type || 'safe')),
@@ -102,7 +151,7 @@ route(/^\/treasury\/(\d+)$/, async (fid) => {
     h('div', { class: 'card' }, h('h3', null, 'وين المصاري'), methodTable(t.by_method),
       h('h3', { class: 'mt' }, 'تفصيل الحسابات'),
       table(['الحساب', 'النوع', 'انجمع', 'طلع', 'ضل', ''], t.accounts.map((a) => [
-        h('span', null, '📍 ', a.name, a.active ? '' : ' (معطل)', a.phone ? h('span', { class: 'hint' }, ` ${a.phone}`) : ''), S.L.accountType[a.type],
+        h('span', null, '📍 ', a.label || a.name, a.active ? '' : ' (معطل)', a.phone ? h('span', { class: 'hint' }, ` ${a.phone}`) : ''), S.L.accountType[a.type],
         money(a.tin, 'c-in'), money(a.tout, 'c-out'), money(a.balance),
         isAdmin() ? h('button', { class: 'btn sm ghost', onclick: (e) => { e.stopPropagation(); accountModal(a); } }, 'تعديل') : '']),
       { onRow: (i) => go(`#/account/${t.accounts[i].id}`) })),
@@ -117,7 +166,7 @@ route(/^\/account\/(\d+)$/, async (id) => {
   const from = h('input', { type: 'date', value: q.from || '' });
   const to = h('input', { type: 'date', value: q.to || '' });
   return h('div', null,
-    h('div', { class: 'page-head' }, h('div', null, h('h1', null, `📍 ${a.name}`), h('div', { class: 'hint' }, `${a.facility_name} · ${S.L.accountType[a.type]}${a.phone ? ` · ${a.phone}` : ''}`)),
+    h('div', { class: 'page-head' }, h('div', null, h('h1', null, `📍 ${a.label || a.name}`), h('div', { class: 'hint' }, `${a.facility_name} · ${S.L.accountType[a.type]}${a.phone ? ` · ${a.phone}` : ''}`)),
       h('div', { class: 'actions' },
         isAdmin() ? h('button', { class: 'btn sec', onclick: () => accountModal(a) }, 'تعديل') : '',
         seesAll() ? h('a', { class: 'btn', href: `#/statement?account_id=${a.id}` }, 'كشف الحساب PDF') : '')),
