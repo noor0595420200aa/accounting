@@ -7,6 +7,10 @@ function findChrome() {
   const candidates = [
     '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    // Edge موجود دائماً على ويندوز ويعمل لإنشاء PDF
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   ];
   try {
